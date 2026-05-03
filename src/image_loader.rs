@@ -271,9 +271,33 @@ fn load_raw(path: &Path) -> Result<DecodedImage, String> {
         return load_cr3(path);
     }
 
-    // Standard RAW formats via rawloader
-    let raw = rawloader::decode_file(path)
-        .map_err(|e| format!("rawloader decode failed: {e:?}"))?;
+    // Standard RAW formats via rawloader, with image-crate fallback for
+    // formats rawloader rejects (e.g. lossy-JPEG DNG, compression 34892).
+    let raw = match rawloader::decode_file(path) {
+        Ok(r) => r,
+        Err(raw_err) => {
+            // Try the image crate; it handles more TIFF/DNG compression variants.
+            let file = std::fs::File::open(path)
+                .map_err(|e| format!("could not open {}: {e}", path.display()))?;
+            let reader = std::io::BufReader::new(file);
+            match image::ImageReader::new(reader)
+                .with_guessed_format()
+                .map_err(|e| e.to_string())
+                .and_then(|r| r.decode().map_err(|e| e.to_string()))
+            {
+                Ok(img) => {
+                    let mut img = img;
+                    if let Some(orientation) = crate::metadata::get_orientation(path) {
+                        img = apply_orientation_to_image(img, orientation);
+                    }
+                    let rgba = img.to_rgba8();
+                    let (w, h) = rgba.dimensions();
+                    return Ok(DecodedImage::new(rgba.into_raw(), w, h));
+                }
+                Err(_) => return Err(format!("rawloader decode failed: {raw_err:?}")),
+            }
+        }
+    };
     
     let width  = raw.width;
     let height = raw.height;
