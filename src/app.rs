@@ -5,9 +5,11 @@ use egui::{CentralPanel, Context, Key, Vec2};
 use std::time::{Duration, Instant};
 
 use crate::db::{Database, ImageRecord};
+use std::path::Path;
 use crate::image_loader::{load_image, ImageCache, DirectoryListing};
 use crate::metadata::{read_metadata, MetaEntry};
-use crate::session::{SessionState, RatingFilter, RatingFilterOp};
+use crate::formats::SupportedFormat;
+use crate::session::{SessionState, Rotation, RatingFilter, RatingFilterOp};
 use crate::settings::AppSettings;
 use crate::viewer::ViewerState;
 
@@ -118,9 +120,7 @@ impl RivettApp {
         
         self.refresh_record();
 
-        let rotation = self.current_record.as_ref()
-            .map(|r| crate::session::Rotation::from_u8(r.rotation))
-            .unwrap_or_default();
+        let rotation = self.session.rotation_for(&path);
 
         if let Some(img) = self.image_cache.get(&path) {
             self.viewer.load_image(ctx, img, rotation, preserve_zoom);
@@ -261,21 +261,8 @@ impl RivettApp {
 
     fn rotate_current(&mut self, cw: bool, ctx: &Context) {
         let Some(path) = self.current_path.clone() else { return };
-        let Some(db)   = &self.db              else { return };
-        
-        let record = self.current_record.as_ref();
-        let current_rot = record.map(|r| crate::session::Rotation::from_u8(r.rotation)).unwrap_or_default();
-        let new_rot = if cw { current_rot.rotate_cw() } else { current_rot.rotate_ccw() };
-
-        if let (Some(dir_str), Some(fname)) = (
-            path.parent().map(|p| p.to_string_lossy().into_owned()),
-            path.file_name().and_then(|n| n.to_str()).map(str::to_string),
-        ) {
-            if let Ok(dir) = db.upsert_directory_by_path(&dir_str) {
-                let _ = db.set_rotation(dir.id, &fname, new_rot.as_u8());
-                self.load_current(ctx, true);
-            }
-        }
+        if cw { self.session.rotate_cw(path); } else { self.session.rotate_ccw(path); }
+        self.load_current(ctx, true);
     }
 
     // ── Delete ────────────────────────────────────────────────────────────
@@ -386,6 +373,40 @@ impl RivettApp {
         );
     }
 
+    // ── Save rotation (Ctrl+S) ────────────────────────────────────────────
+
+    fn save_current_rotation(&mut self, ctx: &Context) {
+        let Some(path) = self.current_path.clone() else { return };
+        let rotation = self.session.rotation_for(&path);
+        if rotation.is_identity() {
+            self.toast("No rotation to save");
+            return;
+        }
+
+        let Some(fmt) = SupportedFormat::from_path(&path) else {
+            self.toast("Unknown format — cannot save");
+            return;
+        };
+
+        let cached_clone = self.image_cache.get(&path).cloned();
+        let result = match fmt {
+            SupportedFormat::Jpeg => save_jpeg_exif_rotation(&path, rotation),
+            SupportedFormat::Svg  => { self.toast("Cannot save rotation for SVG files"); return; }
+            SupportedFormat::Raw  => { self.toast("Cannot save rotation for RAW files"); return; }
+            _                     => save_pixel_rotation(&path, fmt, rotation, cached_clone),
+        };
+
+        match result {
+            Ok(()) => {
+                self.session.set_rotation(path.clone(), Rotation::None);
+                self.image_cache.remove(&path);
+                self.load_current(ctx, true);
+                self.toast("Saved");
+            }
+            Err(e) => self.toast(format!("Save failed: {e}")),
+        }
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────
 
     fn session_sort_order(&self) -> crate::settings::SortOrder {
@@ -493,6 +514,10 @@ impl RivettApp {
             self.hard_refresh(ctx);
         } else if ctrl && input.key_pressed(Key::R) {
             self.soft_refresh(ctx);
+        }
+
+        if ctrl && !input.modifiers.shift && input.key_pressed(Key::S) {
+            self.save_current_rotation(ctx);
         }
     }
 
@@ -806,6 +831,170 @@ impl RivettApp {
 }
 
 // ---------------------------------------------------------------------------
+// Rotation save helpers (free functions)
+// ---------------------------------------------------------------------------
+
+/// Save rotation for JPEG by updating the EXIF Orientation tag in-place.
+/// No pixel data is changed — purely a metadata update.
+fn save_jpeg_exif_rotation(path: &Path, rotation: Rotation) -> Result<(), String> {
+    use img_parts::{ImageEXIF, jpeg::Jpeg, Bytes}; // crate name: img-parts
+
+    let data = std::fs::read(path).map_err(|e| e.to_string())?;
+    let mut jpeg = Jpeg::from_bytes(Bytes::from(data)).map_err(|e| e.to_string())?;
+
+    // The loader already bakes the current EXIF orientation into decoded pixels.
+    // New file orientation = (current EXIF) + (session rotation).
+    let current_exif_rot = crate::metadata::get_orientation(path)
+        .map(exif_orientation_to_rotation)
+        .unwrap_or(Rotation::None);
+    let total = combine_rotations(current_exif_rot, rotation);
+    let new_orientation = rotation_to_exif_orientation(total);
+
+    let exif_bytes: Vec<u8> = match jpeg.exif() {
+        Some(existing) => {
+            let mut bytes = existing.to_vec();
+            if !patch_exif_orientation(&mut bytes, new_orientation) {
+                // Couldn't find the tag — fall back to building a minimal EXIF
+                build_minimal_exif(new_orientation)
+            } else {
+                bytes
+            }
+        }
+        None => build_minimal_exif(new_orientation),
+    };
+
+    jpeg.set_exif(Some(Bytes::from(exif_bytes)));
+    let out = jpeg.encoder().bytes();
+    std::fs::write(path, out.as_ref()).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Convert pure-rotation EXIF orientation values to our Rotation enum.
+fn exif_orientation_to_rotation(o: u32) -> Rotation {
+    match o {
+        6 => Rotation::Cw90,
+        3 => Rotation::Cw180,
+        8 => Rotation::Cw270,
+        _ => Rotation::None,
+    }
+}
+
+/// Map our Rotation to the EXIF Orientation tag value for pure rotations.
+fn rotation_to_exif_orientation(r: Rotation) -> u16 {
+    match r {
+        Rotation::None  => 1,
+        Rotation::Cw90  => 6,
+        Rotation::Cw180 => 3,
+        Rotation::Cw270 => 8,
+    }
+}
+
+/// Combine two rotations: result is `a` followed by `b`.
+fn combine_rotations(a: Rotation, b: Rotation) -> Rotation {
+    let steps = (a.as_u8() + b.as_u8()) % 4;
+    Rotation::from_u8(steps)
+}
+
+/// Scan EXIF bytes for the Orientation IFD entry and overwrite the value.
+/// `bytes` includes the "Exif\0\0" header (6 bytes) followed by a TIFF structure.
+/// Returns `true` if the tag was found and patched.
+fn patch_exif_orientation(bytes: &mut Vec<u8>, new_value: u16) -> bool {
+    // Minimum viable EXIF: 6-byte header + 8-byte TIFF header + at least 1 IFD entry
+    if bytes.len() < 14 { return false; }
+
+    // TIFF starts at offset 6 (after "Exif\0\0")
+    let tiff = &bytes[6..];
+    if tiff.len() < 8 { return false; }
+
+    let little_endian = tiff[0] == b'I' && tiff[1] == b'I';
+    let read_u16 = |b: &[u8], off: usize| -> u16 {
+        if off + 2 > b.len() { return 0; }
+        if little_endian { u16::from_le_bytes([b[off], b[off+1]]) }
+        else             { u16::from_be_bytes([b[off], b[off+1]]) }
+    };
+    let read_u32 = |b: &[u8], off: usize| -> u32 {
+        if off + 4 > b.len() { return 0; }
+        if little_endian { u32::from_le_bytes([b[off], b[off+1], b[off+2], b[off+3]]) }
+        else             { u32::from_be_bytes([b[off], b[off+1], b[off+2], b[off+3]]) }
+    };
+
+    let ifd_offset = read_u32(tiff, 4) as usize;
+    if ifd_offset + 2 > tiff.len() { return false; }
+    let entry_count = read_u16(tiff, ifd_offset) as usize;
+
+    for i in 0..entry_count {
+        let entry_off = ifd_offset + 2 + i * 12;
+        if entry_off + 12 > tiff.len() { break; }
+        let tag = read_u16(tiff, entry_off);
+        if tag == 0x0112 {
+            // Value is at entry_off + 8 in TIFF space → offset + 6 (header) + entry_off + 8 in bytes
+            let val_off = 6 + entry_off + 8;
+            if val_off + 2 > bytes.len() { return false; }
+            let encoded = if little_endian { new_value.to_le_bytes() } else { new_value.to_be_bytes() };
+            bytes[val_off]     = encoded[0];
+            bytes[val_off + 1] = encoded[1];
+            return true;
+        }
+    }
+    false
+}
+
+/// Build a minimal little-endian EXIF segment containing only the Orientation tag.
+/// Layout: "Exif\0\0" + TIFF header (8 bytes) + IFD entry count (2) + 1 entry (12) + IFD terminator (4).
+fn build_minimal_exif(orientation: u16) -> Vec<u8> {
+    let mut b = Vec::with_capacity(32);
+    // EXIF header
+    b.extend_from_slice(b"Exif\0\0");
+    // TIFF header: little-endian, magic 42, IFD offset = 8
+    b.extend_from_slice(&[b'I', b'I', 42, 0]);   // byte order + magic
+    b.extend_from_slice(&8u32.to_le_bytes());      // offset to IFD
+    // IFD: 1 entry
+    b.extend_from_slice(&1u16.to_le_bytes());      // entry count
+    // IFD entry: tag=0x0112, type=SHORT(3), count=1, value=orientation
+    b.extend_from_slice(&0x0112u16.to_le_bytes()); // tag
+    b.extend_from_slice(&3u16.to_le_bytes());       // type SHORT
+    b.extend_from_slice(&1u32.to_le_bytes());       // count
+    b.extend_from_slice(&(orientation as u32).to_le_bytes()); // value (padded to 4 bytes)
+    // IFD terminator
+    b.extend_from_slice(&0u32.to_le_bytes());
+    b
+}
+
+/// Save rotation for non-JPEG formats by pixel-rotating the cached image and re-encoding.
+fn save_pixel_rotation(
+    path: &Path,
+    fmt: SupportedFormat,
+    rotation: Rotation,
+    cached: Option<crate::image_loader::DecodedImage>,
+) -> Result<(), String> {
+    let decoded = cached
+        .ok_or_else(|| "image not in cache — navigate away and back, then retry".to_string())?;
+    let src = image::RgbaImage::from_raw(decoded.width, decoded.height, decoded.rgba.clone())
+        .ok_or("invalid pixel buffer")?;
+    let rotated = match rotation {
+        Rotation::None  => image::DynamicImage::ImageRgba8(src),
+        Rotation::Cw90  => image::DynamicImage::ImageRgba8(image::imageops::rotate90(&src)),
+        Rotation::Cw180 => image::DynamicImage::ImageRgba8(image::imageops::rotate180(&src)),
+        Rotation::Cw270 => image::DynamicImage::ImageRgba8(image::imageops::rotate270(&src)),
+    };
+
+    let img_fmt = match fmt {
+        SupportedFormat::Png  => image::ImageFormat::Png,
+        SupportedFormat::WebP => image::ImageFormat::WebP,
+        SupportedFormat::Bmp  => image::ImageFormat::Bmp,
+        SupportedFormat::Tiff => image::ImageFormat::Tiff,
+        SupportedFormat::Gif  => image::ImageFormat::Gif,
+        SupportedFormat::Exr  => image::ImageFormat::OpenExr,
+        _    => return Err(format!("unsupported format for pixel rotation: {:?}", fmt)),
+    };
+
+    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let mut buf = std::io::BufWriter::new(file);
+    rotated.write_to(&mut buf, img_fmt).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // eframe::App
 // ---------------------------------------------------------------------------
 
@@ -964,7 +1153,7 @@ impl eframe::App for RivettApp {
                     egui::Id::new("modified_badge"),
                     egui::Sense::hover(),
                 );
-                response.on_hover_text("Unsaved session changes (e.g. pending crops)");
+                response.on_hover_text("Unsaved changes (rotation, crops) — Ctrl+S to save");
                 painter.circle_filled(dot_pos, 6.0, egui::Color32::from_rgb(255, 180, 0));
             }
 

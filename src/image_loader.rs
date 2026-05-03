@@ -436,6 +436,12 @@ impl ImageCache {
         self.images.insert(path, image);
     }
 
+    /// Evict an entry so the next access reloads from disk.
+    pub fn remove(&mut self, path: &PathBuf) {
+        self.images.remove(path);
+        self.order.retain(|p| p != path);
+    }
+
     /// Check for any images that finished loading in the background.
     pub fn poll(&mut self) {
         while let Ok((path, img)) = self.rx.try_recv() {

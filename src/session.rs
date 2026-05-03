@@ -160,9 +160,7 @@ impl SessionState {
 
     /// `true` if any save-or-discard prompt should be shown before closing.
     pub fn has_pending_changes(&self) -> bool {
-        // Rotations are now persisted immediately in this design, 
-        // so they don't count as "pending" for the close prompt anymore.
-        !self.pending_crops.is_empty()
+        !self.pending_crops.is_empty() || !self.pending_rotations.is_empty()
     }
 
     /// Clear all session state (hard refresh / `Ctrl+Shift+R`).
