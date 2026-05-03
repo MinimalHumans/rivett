@@ -613,6 +613,13 @@ impl RivettApp {
                             ui.heading("Metadata");
 
                             for entry in &mut self.metadata {
+                                if entry.is_header {
+                                    ui.add_space(8.0);
+                                    ui.heading(&entry.key);
+                                    ui.separator();
+                                    continue;
+                                }
+
                                 let is_multiline = entry.value.contains('\n');
                                 let is_long      = entry.value.len() > 120;
 
