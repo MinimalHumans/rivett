@@ -1146,7 +1146,11 @@ impl eframe::App for RivettApp {
                 );
             }
 
-            if self.session.has_pending_changes() {
+            let current_has_changes = self.current_path.as_ref().map(|p| {
+                self.session.pending_rotations.contains_key(p)
+                    || self.session.pending_crops.contains_key(p)
+            }).unwrap_or(false);
+            if current_has_changes {
                 let dot_pos = egui::pos2(canvas.max.x - 14.0, canvas.min.y + 14.0);
                 let response = ui.interact(
                     egui::Rect::from_center_size(dot_pos, egui::vec2(12.0, 12.0)),
