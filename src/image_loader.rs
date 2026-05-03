@@ -222,45 +222,56 @@ impl DecodedImage {
 
 /// Decode `path` into a [`DecodedImage`].
 pub fn load_image(path: &Path) -> Result<DecodedImage, String> {
+    let fmt = SupportedFormat::from_path(path);
+    
     // Special handling for SVG
-    let ext = path.extension().and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase());
-    if ext == Some("svg".to_string()) {
+    if let Some(SupportedFormat::Svg) = fmt {
         return load_svg(path);
     }
 
     // Special handling for RAW
-    if let Some(SupportedFormat::Raw) = SupportedFormat::from_path(path) {
+    if let Some(SupportedFormat::Raw) = fmt {
         return load_raw(path);
     }
 
-    let file = std::fs::File::open(path)
-        .map_err(|e| format!("could not open {}: {e}", path.display()))?;
-    let reader = std::io::BufReader::new(file);
-    
-    let img_reader = image::ImageReader::new(reader)
-        .with_guessed_format()
-        .map_err(|e| format!("could not determine format for {}: {e}", path.display()))?;
-        
-    let mut img = img_reader.decode()
-        .map_err(|e| format!("could not decode {}: {e}", path.display()))?;
-    
-    // Apply EXIF orientation if applicable
-    if let Some(orientation) = crate::metadata::get_orientation(path) {
-        img = match orientation {
-            2 => img.fliph(),
-            3 => img.rotate180(),
-            4 => img.flipv(),
-            5 => img.rotate90().fliph(),
-            6 => img.rotate90(),
-            7 => img.rotate270().fliph(),
-            8 => img.rotate270(),
-            _ => img,
-        };
-    }
+    // Standard image formats via the `image` crate
+    let res = (|| {
+        let file = std::fs::File::open(path)
+            .map_err(|e| format!("could not open {}: {e}", path.display()))?;
+        let reader = std::io::BufReader::new(file);
+        let img_reader = image::ImageReader::new(reader)
+            .with_guessed_format()
+            .map_err(|e| format!("could not determine format for {}: {e}", path.display()))?;
+        img_reader.decode()
+            .map_err(|e| format!("{e}"))
+    })();
 
-    let rgba = img.to_rgba8();
-    let (width, height) = rgba.dimensions();
-    Ok(DecodedImage::new(rgba.into_raw(), width, height))
+    match res {
+        Ok(mut img) => {
+            if let Some(orientation) = crate::metadata::get_orientation(path) {
+                img = apply_orientation_to_image(img, orientation);
+            }
+            let rgba = img.to_rgba8();
+            let (width, height) = rgba.dimensions();
+            Ok(DecodedImage::new(rgba.into_raw(), width, height))
+        }
+        Err(e) => {
+            // Fallback for TIFFs or other formats that might have embedded JPEGs
+            // or require specialized decoding (like tiled DNG/TIFF).
+            if let Some(SupportedFormat::Tiff) = fmt {
+                if let Ok(decoded) = load_raw(path) {
+                    return Ok(decoded);
+                }
+            }
+            // Last resort: deep search for ANY embedded JPEG markers.
+            // This is useful for legacy TIFFs (e.g. Fax3) that might have a thumbnail.
+            if let Ok(decoded) = load_any_embedded_jpeg(path) {
+                return Ok(decoded);
+            }
+            
+            Err(format!("could not decode {}: {e}", path.display()))
+        }
+    }
 }
 
 fn load_raw(path: &Path) -> Result<DecodedImage, String> {
@@ -268,102 +279,102 @@ fn load_raw(path: &Path) -> Result<DecodedImage, String> {
     
     // Special handling for modern Canon .CR3 (ISO BMFF container)
     if ext == Some("cr3".to_string()) {
-        return load_cr3(path);
+        return load_any_embedded_jpeg(path);
     }
 
-    // Standard RAW formats via rawloader, with image-crate fallback for
-    // formats rawloader rejects (e.g. lossy-JPEG DNG, compression 34892).
-    let raw = match rawloader::decode_file(path) {
-        Ok(r) => r,
-        Err(raw_err) => {
-            // Try the image crate; it handles more TIFF/DNG compression variants.
-            let file = std::fs::File::open(path)
-                .map_err(|e| format!("could not open {}: {e}", path.display()))?;
-            let reader = std::io::BufReader::new(file);
-            match image::ImageReader::new(reader)
-                .with_guessed_format()
-                .map_err(|e| e.to_string())
-                .and_then(|r| r.decode().map_err(|e| e.to_string()))
-            {
-                Ok(img) => {
-                    let mut img = img;
-                    if let Some(orientation) = crate::metadata::get_orientation(path) {
-                        img = apply_orientation_to_image(img, orientation);
+    // Standard RAW formats via rawloader
+    match rawloader::decode_file(path) {
+        Ok(raw) => {
+            let width  = raw.width;
+            let height = raw.height;
+            match &raw.data {
+                rawloader::RawImageData::Integer(data) => {
+                    let mut rgba = Vec::with_capacity(width * height * 4);
+                    if data.len() >= width * height * 3 {
+                        for chunk in data.chunks_exact(3) {
+                            rgba.push((chunk[0] >> 8) as u8);
+                            rgba.push((chunk[1] >> 8) as u8);
+                            rgba.push((chunk[2] >> 8) as u8);
+                            rgba.push(255);
+                        }
+                        let mut img = image::DynamicImage::ImageRgba8(
+                            image::ImageBuffer::from_raw(width as u32, height as u32, rgba).unwrap()
+                        );
+                        if let Some(orientation) = crate::metadata::get_orientation(path) {
+                            img = apply_orientation_to_image(img, orientation);
+                        }
+                        let rgba = img.to_rgba8();
+                        let (width, height) = rgba.dimensions();
+                        return Ok(DecodedImage::new(rgba.into_raw(), width, height));
                     }
-                    let rgba = img.to_rgba8();
-                    let (w, h) = rgba.dimensions();
-                    return Ok(DecodedImage::new(rgba.into_raw(), w, h));
+                    Err("Raw sensor data requires debayering (not yet implemented)".to_string())
                 }
-                Err(_) => {
-                    // Last resort: parse TIFF/DNG IFDs manually and extract JPEG tiles.
-                    // This handles compression 34892 (lossy-JPEG DNG, e.g. Google Pixel Enhanced).
-                    return load_dng_jpeg_tiles(path)
-                        .map_err(|_| format!("rawloader decode failed: {raw_err:?}"));
-                }
+                _ => Err("Unsupported raw data format (non-integer)".to_string()),
             }
         }
-    };
-    
-    let width  = raw.width;
-    let height = raw.height;
-    
-    match &raw.data {
-        rawloader::RawImageData::Integer(data) => {
-            let mut rgba = Vec::with_capacity(width * height * 4);
-            // Simple preview conversion for rawloader formats
-            if data.len() >= width * height * 3 {
-                for chunk in data.chunks_exact(3) {
-                    rgba.push((chunk[0] >> 8) as u8);
-                    rgba.push((chunk[1] >> 8) as u8);
-                    rgba.push((chunk[2] >> 8) as u8);
-                    rgba.push(255);
-                }
-                
-                let mut img = image::DynamicImage::ImageRgba8(
-                    image::ImageBuffer::from_raw(width as u32, height as u32, rgba).unwrap()
-                );
-                
+        Err(raw_err) => {
+            // Fallback 1: Try the image crate directly (handles some TIFF/DNG variants rawloader rejects)
+            let res = (|| {
+                let file = std::fs::File::open(path).ok()?;
+                let reader = std::io::BufReader::new(file);
+                image::ImageReader::new(reader).with_guessed_format().ok()?.decode().ok()
+            })();
+
+            if let Some(mut img) = res {
                 if let Some(orientation) = crate::metadata::get_orientation(path) {
                     img = apply_orientation_to_image(img, orientation);
                 }
-
                 let rgba = img.to_rgba8();
-                let (width, height) = rgba.dimensions();
-                Ok(DecodedImage::new(rgba.into_raw(), width, height))
-            } else {
-                Err("Raw sensor data requires debayering (not yet implemented)".to_string())
+                let (w, h) = rgba.dimensions();
+                return Ok(DecodedImage::new(rgba.into_raw(), w, h));
             }
+
+            // Fallback 2: Parse TIFF/DNG IFDs manually and extract JPEG tiles.
+            // This handles compression 34892 (lossy-JPEG DNG, e.g. Google Pixel Enhanced).
+            if let Ok(decoded) = load_dng_jpeg_tiles(path) {
+                return Ok(decoded);
+            }
+
+            // Fallback 3: Generic JPEG search
+            if let Ok(decoded) = load_any_embedded_jpeg(path) {
+                return Ok(decoded);
+            }
+
+            Err(format!("rawloader decode failed: {raw_err:?}"))
         }
-        _ => Err("Unsupported raw data format (non-integer)".to_string()),
     }
 }
 
-fn load_cr3(path: &Path) -> Result<DecodedImage, String> {
+/// Generic fallback that scans a file for JPEG markers and returns the largest valid one.
+/// Useful for RAW files and legacy TIFFs that include an embedded preview/thumbnail.
+fn load_any_embedded_jpeg(path: &Path) -> Result<DecodedImage, String> {
     let data = std::fs::read(path).map_err(|e| e.to_string())?;
     
     let mut best_match = None;
     let mut search_pos = 0;
     
+    // Scan for JPEG SOI marker: FF D8 FF
     while let Some(pos) = find_subsequence(&data[search_pos..], &[0xFF, 0xD8, 0xFF]) {
         let start = search_pos + pos;
+        // Scan for JPEG EOI marker: FF D9
         if let Some(end_pos) = find_subsequence(&data[start..], &[0xFF, 0xD9]) {
             let end = start + end_pos + 2;
             let len = end - start;
+            // Heuristic: the largest JPEG in the file is probably the high-res preview we want.
             if len > best_match.map(|(s, e)| e - s).unwrap_or(0) {
                 best_match = Some((start, end));
             }
         }
         search_pos = start + 3;
-        if search_pos > data.len() - 3 { break; }
+        if search_pos > data.len().saturating_sub(3) { break; }
     }
 
     if let Some((start, end)) = best_match {
         let jpeg_bytes = &data[start..end];
         let mut img = image::load_from_memory(jpeg_bytes)
-            .map_err(|e| format!("failed to decode extracted CR3 preview: {e}"))?;
+            .map_err(|e| format!("failed to decode extracted preview: {e}"))?;
         
-        // Try extracting orientation from the embedded JPEG bytes first.
-        // If missing (common in .CR3), fallback to the main file's deep metadata.
+        // Try extracting orientation from the embedded JPEG bytes first, then main file metadata.
         let orientation = crate::metadata::get_orientation_from_bytes(jpeg_bytes)
             .or_else(|| crate::metadata::get_orientation(path));
 
@@ -375,7 +386,7 @@ fn load_cr3(path: &Path) -> Result<DecodedImage, String> {
         let (width, height) = rgba.dimensions();
         Ok(DecodedImage::new(rgba.into_raw(), width, height))
     } else {
-        Err("Could not find embedded JPEG preview in .CR3 file".to_string())
+        Err("Could not find any embedded JPEG preview in file".to_string())
     }
 }
 
@@ -395,8 +406,6 @@ fn apply_orientation_to_image(img: image::DynamicImage, orientation: u32) -> ima
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|window| window == needle)
 }
-
-
 
 fn load_svg(path: &Path) -> Result<DecodedImage, String> {
     let opt = resvg::usvg::Options::default();
