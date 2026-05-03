@@ -1,6 +1,6 @@
 [package]
 name        = "rivett"
-version = "0.2.3-rc1"
+version = "0.2.3-2c57d4b"
 authors     = ["Rivett Developers <dev@rivett.com>"]
 edition     = "2021"
 description = "Rust Image Vetting Tool — fast, keyboard-driven image viewer"
@@ -10,7 +10,7 @@ license     = "MIT"
 name = "Rivett"
 identifier = "com.rivett.rivett"
 icon = ["resources/icon.png"]
-version = "0.2.3-rc1"
+version = "0.2.3-2c57d4b"
 resources = []
 copyright = "Copyright © 2026 Rivett Developers. All rights reserved."
 category = "Graphics and Design"

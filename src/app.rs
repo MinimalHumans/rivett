@@ -31,8 +31,8 @@ pub struct RivettApp {
     delete_confirm:  Option<DeleteConfirm>,
 
     // Drag-out state
-    hwnd:            Option<isize>,
-    drag_out_active: bool,
+    pending_drag_out:  bool, // set on gesture detection; consumed at top of next update()
+    middle_btn_on_canvas: bool, // tracks middle button pressed-while-hovering canvas
 
     #[allow(dead_code)]
     settings:        AppSettings,
@@ -63,8 +63,8 @@ impl RivettApp {
             show_info_panel: settings.show_info_panel,
             toast:           None,
             delete_confirm:  None,
-            hwnd:            None,
-            drag_out_active: false,
+            pending_drag_out:     false,
+            middle_btn_on_canvas: false,
             settings,
         };
 
@@ -350,17 +350,37 @@ impl RivettApp {
 
     // ── Drag-out ──────────────────────────────────────────────────────────
 
-    fn start_drag_out(&mut self) {
-        if self.drag_out_active { return; }
-        let (Some(path), Some(hwnd)) = (self.current_path.clone(), self.hwnd) else { return };
-        self.drag_out_active = true;
-        // DoDragDrop must run on the main (window-owning) thread. The egui window
-        // will freeze visually during the drag but the OS handles cursor feedback.
-        let win = OwnedWindowHandle(hwnd);
+    fn execute_drag_out(&mut self) {
+        let Some(path) = self.current_path.clone() else { return };
+        let win = OwnedWindowHandle(1);
+
+        // Build a small thumbnail for the drag cursor from the cached decoded image.
+        // Image::File would load the full-resolution image, making the cursor giant.
+        let drag_image = 'img: {
+            let Some(decoded) = self.image_cache.get(&path) else {
+                break 'img drag::Image::File(path.clone());
+            };
+            let Some(src) = image::RgbaImage::from_raw(
+                decoded.width, decoded.height, decoded.rgba.clone(),
+            ) else {
+                break 'img drag::Image::File(path.clone());
+            };
+            let thumb = image::imageops::thumbnail(&src, 128, 128);
+            let mut png = Vec::new();
+            if image::DynamicImage::ImageRgba8(thumb)
+                .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                .is_ok()
+            {
+                drag::Image::Raw(png)
+            } else {
+                drag::Image::File(path.clone())
+            }
+        };
+
         let _ = drag::start_drag(
             &win,
-            drag::DragItem::Files(vec![path.clone()]),
-            drag::Image::File(path),
+            drag::DragItem::Files(vec![path]),
+            drag_image,
             |_result, _pos| {},
             drag::Options::default(),
         );
@@ -790,18 +810,16 @@ impl RivettApp {
 // ---------------------------------------------------------------------------
 
 impl eframe::App for RivettApp {
-    fn update(&mut self, ctx: &Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.image_cache.poll();
         ctx.request_repaint();
 
-        // Capture HWND once for later drag-out use
-        if self.hwnd.is_none() {
-            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-            if let Ok(handle) = frame.window_handle() {
-                if let RawWindowHandle::Win32(h) = handle.as_raw() {
-                    self.hwnd = Some(h.hwnd.get());
-                }
-            }
+        // Execute any pending drag-out here, at the very top of the update loop,
+        // before egui opens any closures. DoDragDrop must run while the main thread's
+        // WndProc is in a clean state — calling it mid-closure breaks message routing.
+        if self.pending_drag_out {
+            self.pending_drag_out = false;
+            self.execute_drag_out();
         }
 
         self.handle_keyboard(ctx);
@@ -846,16 +864,29 @@ impl eframe::App for RivettApp {
 
             let ctrl_held = ctx.input(|i| i.modifiers.ctrl);
 
-            // Drag-out: Ctrl+primary or middle mouse
+            // Middle-mouse drag detection.
+            // egui's Sense::click_and_drag() only tracks the primary button, so
+            // drag_started_by(Middle) never fires. Track the middle button manually.
+            let (middle_pressed, middle_down, pointer_moving) = ctx.input(|i| (
+                i.pointer.button_pressed(egui::PointerButton::Middle),
+                i.pointer.button_down(egui::PointerButton::Middle),
+                i.pointer.is_moving(),
+            ));
+            if middle_pressed && response.hovered() {
+                self.middle_btn_on_canvas = true;
+            }
+            if !middle_down {
+                self.middle_btn_on_canvas = false;
+            }
+            let middle_drag_started = self.middle_btn_on_canvas && middle_down && pointer_moving;
+
+            // Detect drag-out gesture; schedule for execution at the top of the next frame.
             let drag_out_trigger =
                 (response.drag_started_by(egui::PointerButton::Primary) && ctrl_held)
-                || response.drag_started_by(egui::PointerButton::Middle);
-            if drag_out_trigger {
-                self.start_drag_out();
-            }
-            // Reset drag-out guard when all buttons are released
-            if !response.dragged() {
-                self.drag_out_active = false;
+                || middle_drag_started;
+            if drag_out_trigger && !self.pending_drag_out && self.current_path.is_some() {
+                self.pending_drag_out = true;
+                self.middle_btn_on_canvas = false; // consume so it doesn't re-fire
             }
 
             // Pan: primary drag only when Ctrl is not held
