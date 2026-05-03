@@ -168,6 +168,9 @@ impl DirectoryListing {
         self.files.get(self.current_index)
     }
 
+    pub fn go_to_first(&mut self) { self.current_index = 0; }
+    pub fn go_to_last(&mut self)  { self.current_index = self.files.len().saturating_sub(1); }
+
     pub fn len(&self) -> usize { self.files.len() }
     pub fn is_empty(&self) -> bool { self.files.is_empty() }
 

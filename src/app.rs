@@ -21,7 +21,7 @@ pub struct RivettApp {
     image_cache:     ImageCache,
     listing:         Option<DirectoryListing>,
     session:         SessionState,
-    
+
     // UI state
     current_path:    Option<std::path::PathBuf>,
     current_record:  Option<ImageRecord>,
@@ -29,7 +29,11 @@ pub struct RivettApp {
     show_info_panel: bool,
     toast:           Option<Toast>,
     delete_confirm:  Option<DeleteConfirm>,
-    
+
+    // Drag-out state
+    hwnd:            Option<isize>,
+    drag_out_active: bool,
+
     #[allow(dead_code)]
     settings:        AppSettings,
 }
@@ -50,7 +54,7 @@ impl RivettApp {
         let mut app = Self {
             db,
             viewer:          ViewerState::new(),
-            image_cache:     ImageCache::new(32), // cache 32 decoded images
+            image_cache:     ImageCache::new(32),
             listing:         None,
             session:         SessionState::new(settings.default_sort),
             current_path:    None,
@@ -59,6 +63,8 @@ impl RivettApp {
             show_info_panel: settings.show_info_panel,
             toast:           None,
             delete_confirm:  None,
+            hwnd:            None,
+            drag_out_active: false,
             settings,
         };
 
@@ -196,13 +202,40 @@ impl RivettApp {
         if moved { self.load_current(ctx, preserve_zoom); }
     }
 
+    // ── Navigate to list boundaries ───────────────────────────────────────
+
+    fn navigate_first(&mut self, ctx: &Context, preserve_zoom: bool) {
+        if let Some(ref mut listing) = self.listing {
+            listing.go_to_first();
+            while listing.current().map(|p| self.session.ignored_images.contains(p)).unwrap_or(false) {
+                if !listing.go_next() { break; }
+            }
+        }
+        self.load_current(ctx, preserve_zoom);
+    }
+
+    fn navigate_last(&mut self, ctx: &Context, preserve_zoom: bool) {
+        if let Some(ref mut listing) = self.listing {
+            listing.go_to_last();
+            while listing.current().map(|p| self.session.ignored_images.contains(p)).unwrap_or(false) {
+                if !listing.go_prev() { break; }
+            }
+        }
+        self.load_current(ctx, preserve_zoom);
+    }
+
     // ── Hide (ignore) ─────────────────────────────────────────────────────
 
     fn hide_current(&mut self, ctx: &Context) {
         let Some(path) = self.current_path.clone() else { return };
+        self.session.ignore_image(path.clone());
         self.toast(format!("Hidden: {}", path.file_name()
             .and_then(|n| n.to_str()).unwrap_or("?")));
+        let before = self.current_path.clone();
         self.navigate_next(ctx, false);
+        if self.current_path == before {
+            self.navigate_prev(ctx, false);
+        }
     }
 
     // ── Rating ────────────────────────────────────────────────────────────
@@ -259,13 +292,15 @@ impl RivettApp {
             Ok(()) => {
                 let name = path.file_name()
                     .and_then(|n| n.to_str()).unwrap_or("?").to_string();
-                
+
+                let old_index = self.listing.as_ref().map(|l| l.current_index).unwrap_or(0);
                 let sort = self.session_sort_order();
                 let db_ref = self.db.as_ref();
                 if let Some(ref mut listing) = self.listing {
                     let _ = listing.refresh(sort, db_ref);
+                    listing.current_index = old_index.min(listing.files.len().saturating_sub(1));
                 }
-                
+
                 self.toast(format!("Deleted: {name}"));
                 self.current_path   = None;
                 self.current_record = None;
@@ -293,6 +328,42 @@ impl RivettApp {
             }
         }
         self.load_current(ctx, false);
+    }
+
+    // ── Soft refresh (Ctrl+R) ────────────────────────────────────────────
+
+    fn soft_refresh(&mut self, ctx: &Context) {
+        let sort = self.session_sort_order();
+        let db_ref = self.db.as_ref();
+        if let Some(ref mut listing) = self.listing {
+            let old_index = listing.current_index;
+            let had_current = listing.current().cloned();
+            if listing.refresh(sort, db_ref).is_ok() {
+                if !had_current.as_ref().map(|p| listing.seek_to(p)).unwrap_or(false) {
+                    listing.current_index = old_index.min(listing.files.len().saturating_sub(1));
+                }
+            }
+        }
+        self.load_current(ctx, false);
+        self.toast("Directory refreshed");
+    }
+
+    // ── Drag-out ──────────────────────────────────────────────────────────
+
+    fn start_drag_out(&mut self) {
+        if self.drag_out_active { return; }
+        let (Some(path), Some(hwnd)) = (self.current_path.clone(), self.hwnd) else { return };
+        self.drag_out_active = true;
+        // DoDragDrop must run on the main (window-owning) thread. The egui window
+        // will freeze visually during the drag but the OS handles cursor feedback.
+        let win = OwnedWindowHandle(hwnd);
+        let _ = drag::start_drag(
+            &win,
+            drag::DragItem::Files(vec![path.clone()]),
+            drag::Image::File(path),
+            |_result, _pos| {},
+            drag::Options::default(),
+        );
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────
@@ -351,6 +422,8 @@ impl RivettApp {
         if input.key_pressed(Key::ArrowLeft) || input.key_pressed(Key::PageUp) {
             self.navigate_prev(ctx, preserve_zoom);
         }
+        if input.key_pressed(Key::Home) { self.navigate_first(ctx, preserve_zoom); }
+        if input.key_pressed(Key::End)  { self.navigate_last(ctx, preserve_zoom); }
 
         if input.key_pressed(Key::I) { 
             self.show_info_panel = !self.show_info_panel;
@@ -398,6 +471,8 @@ impl RivettApp {
 
         if ctrl && input.modifiers.shift && input.key_pressed(Key::R) {
             self.hard_refresh(ctx);
+        } else if ctrl && input.key_pressed(Key::R) {
+            self.soft_refresh(ctx);
         }
     }
 
@@ -715,9 +790,19 @@ impl RivettApp {
 // ---------------------------------------------------------------------------
 
 impl eframe::App for RivettApp {
-    fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &Context, frame: &mut eframe::Frame) {
         self.image_cache.poll();
         ctx.request_repaint();
+
+        // Capture HWND once for later drag-out use
+        if self.hwnd.is_none() {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if let Ok(handle) = frame.window_handle() {
+                if let RawWindowHandle::Win32(h) = handle.as_raw() {
+                    self.hwnd = Some(h.hwnd.get());
+                }
+            }
+        }
 
         self.handle_keyboard(ctx);
 
@@ -759,7 +844,22 @@ impl eframe::App for RivettApp {
 
             let response = ui.allocate_rect(canvas, egui::Sense::click_and_drag());
 
-            if response.dragged_by(egui::PointerButton::Primary) {
+            let ctrl_held = ctx.input(|i| i.modifiers.ctrl);
+
+            // Drag-out: Ctrl+primary or middle mouse
+            let drag_out_trigger =
+                (response.drag_started_by(egui::PointerButton::Primary) && ctrl_held)
+                || response.drag_started_by(egui::PointerButton::Middle);
+            if drag_out_trigger {
+                self.start_drag_out();
+            }
+            // Reset drag-out guard when all buttons are released
+            if !response.dragged() {
+                self.drag_out_active = false;
+            }
+
+            // Pan: primary drag only when Ctrl is not held
+            if response.dragged_by(egui::PointerButton::Primary) && !ctrl_held {
                 self.viewer.fit_to_window = false;
                 self.viewer.pan += response.drag_delta();
             }
@@ -917,5 +1017,39 @@ impl DeleteConfirm {
     }
     fn alive(&self) -> bool {
         self.start.elapsed() < Duration::from_secs(4)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Drag-out window handle helper
+// ---------------------------------------------------------------------------
+
+/// Wraps a raw Win32 HWND (as isize) so it can be passed to the `drag` crate
+/// across thread boundaries. The HWND is valid for the lifetime of the app window.
+struct OwnedWindowHandle(isize);
+
+impl raw_window_handle::HasWindowHandle for OwnedWindowHandle {
+    fn window_handle(&self) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        let hwnd = std::num::NonZeroIsize::new(self.0)
+            .ok_or(raw_window_handle::HandleError::NotSupported)?;
+        let handle = raw_window_handle::Win32WindowHandle::new(hwnd);
+        // SAFETY: the HWND is valid while the app window exists and DoDragDrop runs
+        unsafe {
+            Ok(raw_window_handle::WindowHandle::borrow_raw(
+                raw_window_handle::RawWindowHandle::Win32(handle),
+            ))
+        }
+    }
+}
+
+impl raw_window_handle::HasDisplayHandle for OwnedWindowHandle {
+    fn display_handle(&self) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        unsafe {
+            Ok(raw_window_handle::DisplayHandle::borrow_raw(
+                raw_window_handle::RawDisplayHandle::Windows(
+                    raw_window_handle::WindowsDisplayHandle::new(),
+                ),
+            ))
+        }
     }
 }
