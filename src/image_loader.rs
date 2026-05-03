@@ -294,7 +294,12 @@ fn load_raw(path: &Path) -> Result<DecodedImage, String> {
                     let (w, h) = rgba.dimensions();
                     return Ok(DecodedImage::new(rgba.into_raw(), w, h));
                 }
-                Err(_) => return Err(format!("rawloader decode failed: {raw_err:?}")),
+                Err(_) => {
+                    // Last resort: parse TIFF/DNG IFDs manually and extract JPEG tiles.
+                    // This handles compression 34892 (lossy-JPEG DNG, e.g. Google Pixel Enhanced).
+                    return load_dng_jpeg_tiles(path)
+                        .map_err(|_| format!("rawloader decode failed: {raw_err:?}"));
+                }
             }
         }
     };
@@ -524,6 +529,211 @@ fn sort_paths(files: &mut [PathBuf], order: SortOrder) {
             files.sort_by_key(|p| p.metadata().map(|m| m.len()).unwrap_or(0));
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// DNG lossy-JPEG fallback decoder
+//
+// Handles DNG files that use compression 34892 (lossy JPEG tiles — e.g. Google
+// Pixel "Enhanced" DNGs).  Neither rawloader nor the image/tiff crate decode
+// this format; we parse the TIFF IFD chain ourselves to locate each JPEG
+// strip/tile and decode it with image::load_from_memory_with_format.
+// ---------------------------------------------------------------------------
+
+fn tiff_r16(data: &[u8], off: usize, le: bool) -> u16 {
+    if off + 2 > data.len() { return 0; }
+    if le { u16::from_le_bytes([data[off], data[off+1]]) }
+    else  { u16::from_be_bytes([data[off], data[off+1]]) }
+}
+
+fn tiff_r32(data: &[u8], off: usize, le: bool) -> u32 {
+    if off + 4 > data.len() { return 0; }
+    if le { u32::from_le_bytes([data[off], data[off+1], data[off+2], data[off+3]]) }
+    else  { u32::from_be_bytes([data[off], data[off+1], data[off+2], data[off+3]]) }
+}
+
+fn tiff_scalar(data: &[u8], le: bool, typ: u16, vpos: usize) -> u32 {
+    match typ {
+        1 | 6 | 7 => data.get(vpos).map_or(0, |&b| b as u32),
+        3 | 8      => tiff_r16(data, vpos, le) as u32,
+        _          => tiff_r32(data, vpos, le),
+    }
+}
+
+fn tiff_array_u32(data: &[u8], le: bool, typ: u16, count: u32, vpos: usize) -> Vec<u32> {
+    let item_size: usize = match typ { 1|2|6|7 => 1, 3|8 => 2, _ => 4 };
+    let total = item_size.saturating_mul(count as usize);
+    let base  = if total <= 4 { vpos } else { tiff_r32(data, vpos, le) as usize };
+    (0..count as usize).map(|i| match typ {
+        1|6|7 => data.get(base + i).map_or(0, |&b| b as u32),
+        3|8   => tiff_r16(data, base + i * 2, le) as u32,
+        _     => tiff_r32(data, base + i * 4, le),
+    }).collect()
+}
+
+fn decode_jpeg_strip(data: &[u8], off: usize, len: usize) -> Result<image::RgbaImage, String> {
+    let end = off.checked_add(len).filter(|&e| e <= data.len())
+        .ok_or("strip offset out of bounds")?;
+    let bytes = &data[off..end];
+    if !bytes.starts_with(&[0xFF, 0xD8]) { return Err("not a JPEG marker".into()); }
+    image::load_from_memory_with_format(bytes, image::ImageFormat::Jpeg)
+        .map_err(|e| e.to_string())
+        .map(|i| i.to_rgba8())
+}
+
+fn assemble_jpeg_tiles(
+    data: &[u8],
+    offsets: &[u32], counts: &[u32],
+    img_w: u32, img_h: u32,
+    tile_w: u32, tile_h: u32,
+) -> Result<image::RgbaImage, String> {
+    let tiles_x = (img_w + tile_w - 1) / tile_w;
+    let mut buf = vec![0u8; (img_w * img_h * 4) as usize];
+    for (i, (&off, &cnt)) in offsets.iter().zip(counts.iter()).enumerate() {
+        let tile = decode_jpeg_strip(data, off as usize, cnt as usize)?;
+        let tx   = i as u32 % tiles_x;
+        let ty   = i as u32 / tiles_x;
+        let x0   = tx * tile_w;
+        let y0   = ty * tile_h;
+        let cw   = tile_w.min(img_w.saturating_sub(x0));
+        let ch   = tile_h.min(img_h.saturating_sub(y0));
+        for row in 0..ch {
+            let src = (row * tile.width() * 4) as usize;
+            let dst = ((y0 + row) * img_w * 4 + x0 * 4) as usize;
+            let n   = (cw * 4) as usize;
+            if src + n <= tile.as_raw().len() && dst + n <= buf.len() {
+                buf[dst..dst+n].copy_from_slice(&tile.as_raw()[src..src+n]);
+            }
+        }
+    }
+    image::ImageBuffer::from_raw(img_w, img_h, buf)
+        .ok_or_else(|| "buffer size mismatch for tiled assembly".into())
+}
+
+fn assemble_jpeg_strips(
+    data: &[u8],
+    offsets: &[u32], counts: &[u32],
+    img_w: u32, img_h: u32,
+) -> Result<image::RgbaImage, String> {
+    let mut buf = vec![0u8; (img_w * img_h * 4) as usize];
+    let mut y = 0u32;
+    for (&off, &cnt) in offsets.iter().zip(counts.iter()) {
+        let strip  = decode_jpeg_strip(data, off as usize, cnt as usize)?;
+        let copy_h = strip.height().min(img_h.saturating_sub(y));
+        let copy_w = img_w.min(strip.width());
+        for row in 0..copy_h {
+            let src = (row * strip.width() * 4) as usize;
+            let dst = ((y + row) * img_w * 4) as usize;
+            let n   = (copy_w * 4) as usize;
+            if src + n <= strip.as_raw().len() && dst + n <= buf.len() {
+                buf[dst..dst+n].copy_from_slice(&strip.as_raw()[src..src+n]);
+            }
+        }
+        y += strip.height();
+        if y >= img_h { break; }
+    }
+    image::ImageBuffer::from_raw(img_w, img_h, buf)
+        .ok_or_else(|| "buffer size mismatch for strip assembly".into())
+}
+
+fn load_dng_jpeg_tiles(path: &Path) -> Result<DecodedImage, String> {
+    let data = std::fs::read(path).map_err(|e| e.to_string())?;
+    if data.len() < 8 { return Err("file too small".into()); }
+
+    let le = match &data[..2] {
+        b"II" => true,
+        b"MM" => false,
+        _ => return Err("not a TIFF/DNG file".into()),
+    };
+    if tiff_r16(&data, 2, le) != 42 { return Err("TIFF magic mismatch".into()); }
+
+    struct Candidate {
+        width: u32, height: u32,
+        offsets: Vec<u32>, counts: Vec<u32>,
+        tile_w: Option<u32>, tile_h: Option<u32>,
+        subfile: u32,
+    }
+    let mut candidates: Vec<Candidate> = Vec::new();
+
+    // Walk all IFDs including SubIFDs (tag 330) to find JPEG-compressed image data.
+    let mut queue: Vec<usize> = vec![tiff_r32(&data, 4, le) as usize];
+    let mut visited = std::collections::HashSet::<usize>::new();
+
+    while let Some(ifd_off) = queue.pop() {
+        if ifd_off == 0 || ifd_off + 2 > data.len() { continue; }
+        if !visited.insert(ifd_off) { continue; }
+
+        let nentries = tiff_r16(&data, ifd_off, le) as usize;
+        let (mut width, mut height, mut compression, mut subfile) = (0u32, 0u32, 0u32, 0u32);
+        let (mut offsets, mut counts) = (vec![], vec![]);
+        let (mut tile_w, mut tile_h): (Option<u32>, Option<u32>) = (None, None);
+
+        for i in 0..nentries {
+            let e   = ifd_off + 2 + i * 12;
+            if e + 12 > data.len() { break; }
+            let tag = tiff_r16(&data, e,     le);
+            let typ = tiff_r16(&data, e + 2, le);
+            let cnt = tiff_r32(&data, e + 4, le);
+            let vp  = e + 8;
+            match tag {
+                254 => subfile     = tiff_scalar(&data, le, typ, vp),
+                256 => width       = tiff_scalar(&data, le, typ, vp),
+                257 => height      = tiff_scalar(&data, le, typ, vp),
+                259 => compression = tiff_scalar(&data, le, typ, vp),
+                278 | 324 => offsets = tiff_array_u32(&data, le, typ, cnt, vp),
+                279 | 325 => counts  = tiff_array_u32(&data, le, typ, cnt, vp),
+                322 => tile_w = Some(tiff_scalar(&data, le, typ, vp)),
+                323 => tile_h = Some(tiff_scalar(&data, le, typ, vp)),
+                // SubIFD pointers — enqueue each
+                330 => { for off in tiff_array_u32(&data, le, typ, cnt, vp) { queue.push(off as usize); } }
+                _ => {}
+            }
+        }
+
+        // Enqueue next chained IFD
+        let next = tiff_r32(&data, ifd_off + 2 + nentries * 12, le) as usize;
+        if next != 0 { queue.push(next); }
+
+        // Only consider IFDs with JPEG compression and image data
+        if (compression == 34892 || compression == 7 || compression == 6)
+            && width > 0 && height > 0
+            && !offsets.is_empty() && !counts.is_empty()
+        {
+            candidates.push(Candidate { width, height, offsets, counts, tile_w, tile_h, subfile });
+        }
+    }
+
+    if candidates.is_empty() {
+        return Err("no JPEG-compressed IFD found in DNG".into());
+    }
+
+    // Try non-thumbnails first, then largest by area
+    candidates.sort_by(|a, b| {
+        a.subfile.cmp(&b.subfile)
+            .then((b.width * b.height).cmp(&(a.width * a.height)))
+    });
+
+    for c in &candidates {
+        let result: Result<image::RgbaImage, String> = match (c.tile_w, c.tile_h) {
+            (Some(tw), Some(th)) =>
+                assemble_jpeg_tiles(&data, &c.offsets, &c.counts, c.width, c.height, tw, th),
+            _ if c.offsets.len() == 1 =>
+                decode_jpeg_strip(&data, c.offsets[0] as usize, c.counts[0] as usize),
+            _ =>
+                assemble_jpeg_strips(&data, &c.offsets, &c.counts, c.width, c.height),
+        };
+        if let Ok(rgba_img) = result {
+            let mut img = image::DynamicImage::ImageRgba8(rgba_img);
+            if let Some(o) = crate::metadata::get_orientation(path) {
+                img = apply_orientation_to_image(img, o);
+            }
+            let rgba = img.to_rgba8();
+            let (w, h) = rgba.dimensions();
+            return Ok(DecodedImage::new(rgba.into_raw(), w, h));
+        }
+    }
+
+    Err("failed to decode any JPEG-compressed IFD from DNG".into())
 }
 
 // ---------------------------------------------------------------------------
