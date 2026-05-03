@@ -267,6 +267,7 @@ mod tests {
     #[test]
     fn toggle_fit_switches_modes_and_restores_zoom() {
         let mut v = ViewerState::new();
+        v.fit_to_window = false;
         v.image_size = Vec2::new(1000.0, 1000.0);
         v.zoom = 0.5;
         
