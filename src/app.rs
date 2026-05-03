@@ -530,11 +530,12 @@ impl RivettApp {
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let label_kv = |ui: &mut egui::Ui, key: &str, value: String| {
-                        ui.horizontal_wrapped(|ui| {
+                        ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
                             ui.label(egui::RichText::new(format!("{key}:")).strong());
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(value);
+                                ui.add(egui::Label::new(&value).truncate())
+                                    .on_hover_text(&value);
                             });
                         });
                         ui.add_space(2.0);
