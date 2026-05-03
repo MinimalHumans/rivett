@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+import sys
+import re
+import subprocess
+import argparse
+from pathlib import Path
+
+CARGO_TOML = Path("Cargo.toml")
+
+def get_current_version():
+    if not CARGO_TOML.exists():
+        print("Cargo.toml not found in current directory.")
+        sys.exit(1)
+    content = CARGO_TOML.read_text()
+    match = re.search(r'^version\s*=\s*"([^"]+)"', content, re.MULTILINE)
+    if not match:
+        print("Could not find version in Cargo.toml")
+        sys.exit(1)
+    return match.group(1)
+
+def set_version(new_version):
+    content = CARGO_TOML.read_text()
+    # Update both [package] version and [package.metadata.bundle] version
+    # Using a lambda to replace all occurrences of version = "..."
+    new_content = re.sub(r'^version\s*=\s*"[^"]+"', f'version = "{new_version}"', content, flags=re.MULTILINE)
+    CARGO_TOML.write_text(new_content)
+    print(f"Updated Cargo.toml version to: {new_version}")
+
+def get_short_hash():
+    try:
+        return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"]).decode("utf-8").strip()
+    except subprocess.CalledProcessError:
+        print("Error: Not a git repository or git not installed.")
+        sys.exit(1)
+
+def cmd_report(args):
+    print(get_current_version())
+
+def cmd_test(args):
+    current = get_current_version()
+    # Base version is x.y.z (ignoring everything after first -)
+    base_version = current.split('-')[0]
+    short_hash = get_short_hash()
+    new_version = f"{base_version}-{short_hash}"
+    set_version(new_version)
+
+def cmd_up(args):
+    current = get_current_version()
+    # Extract x.y.z even if there are suffixes
+    match = re.match(r'^(\d+)\.(\d+)\.(\d+)', current)
+    if not match:
+        print(f"Current version '{current}' does not start with x.y.z pattern")
+        sys.exit(1)
+    
+    major, minor, patch = map(int, match.groups())
+    
+    if args.part == "major":
+        major += 1
+        minor = 0
+        patch = 0
+    elif args.part == "minor":
+        minor += 1
+        patch = 0
+    else: # patch
+        patch += 1
+        
+    new_version = f"{major}.{minor}.{patch}"
+    set_version(new_version)
+
+def cmd_release(args):
+    current = get_current_version()
+    # Strip any suffix (-rcX, -hash, etc)
+    base_version = current.split('-')[0]
+    set_version(base_version)
+    
+    tag = f"v{base_version}"
+    
+    # Check if tag exists
+    try:
+        tags = subprocess.check_output(["git", "tag", "-l"]).decode("utf-8").splitlines()
+    except subprocess.CalledProcessError:
+        tags = []
+
+    if tag in tags:
+        print(f"Tag {tag} already exists.")
+        response = input("Delete tag and re-release? [y/N]: ").strip().lower()
+        if response == 'y':
+            print(f"Deleting local tag {tag}...")
+            subprocess.run(["git", "tag", "-d", tag], check=True)
+            print(f"Deleting remote tag {tag}...")
+            subprocess.run(["git", "push", "origin", "--delete", tag], check=False)
+        else:
+            print("Release aborted.")
+            return
+
+    # Commit the version change if there are changes
+    status = subprocess.check_output(["git", "status", "--porcelain", "Cargo.toml"]).decode("utf-8")
+    if status:
+        subprocess.run(["git", "add", "Cargo.toml"], check=True)
+        subprocess.run(["git", "commit", "-m", f"chore: release {base_version}"], check=True)
+
+    # Tag and push
+    print(f"Tagging {tag}...")
+    subprocess.run(["git", "tag", "-a", tag, "-m", f"Release {tag}"], check=True)
+    
+    print("Pushing to origin main...")
+    subprocess.run(["git", "push", "origin", "main"], check=True)
+    
+    print(f"Pushing tag {tag} to origin...")
+    subprocess.run(["git", "push", "origin", tag], check=True)
+    
+    print(f"Successfully released {tag}")
+
+def main():
+    parser = argparse.ArgumentParser(description="Version management script for Rivett")
+    subparsers = parser.add_subparsers(dest="command")
+    
+    # version (no args)
+    # Note: argparse doesn't easily support "no args" as a subcommand with its own help
+    # so we handle it by checking if command is None.
+    
+    # version test
+    subparsers.add_parser("test", help="Set version to x.x.x-<short hash>")
+    
+    # version up [major|minor|patch]
+    up_parser = subparsers.add_parser("up", help="Increment version part (default: patch)")
+    up_parser.add_argument("part", choices=["major", "minor", "patch"], nargs="?", default="patch")
+    
+    # version release
+    subparsers.add_parser("release", help="Strip hash, tag, and push release")
+    
+    args = parser.parse_args()
+    
+    if args.command == "test":
+        cmd_test(args)
+    elif args.command == "up":
+        cmd_up(args)
+    elif args.command == "release":
+        cmd_release(args)
+    else:
+        # Default behavior: report version
+        cmd_report(args)
+
+if __name__ == "__main__":
+    main()
