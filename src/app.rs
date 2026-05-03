@@ -632,8 +632,18 @@ impl RivettApp {
                                         );
                                     });
                                 } else {
-                                    ui.label(egui::RichText::new(&entry.key).strong());
-                                    ui.label(&entry.value);
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 4.0;
+                                        let key = if entry.key.ends_with(':') {
+                                            entry.key.clone()
+                                        } else {
+                                            format!("{}:", entry.key)
+                                        };
+                                        ui.label(egui::RichText::new(key).strong());
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            ui.label(&entry.value);
+                                        });
+                                    });
                                 }
                                 ui.add_space(2.0);
                             }

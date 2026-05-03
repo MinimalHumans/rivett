@@ -35,8 +35,66 @@ pub fn read_metadata(path: &Path) -> Vec<MetaEntry> {
         read_exif_with_fallback(path)
     };
 
-    // Post-process entries for known AI formats (JSON pretty-printing, etc.)
-    for entry in &mut entries {
+    post_process_metadata(&mut entries);
+
+    entries
+}
+
+fn post_process_metadata(entries: &mut Vec<MetaEntry>) {
+    let mut make = None;
+    let mut model = None;
+    let mut to_remove = std::collections::HashSet::new();
+
+    for (i, entry) in entries.iter().enumerate() {
+        match entry.key.as_str() {
+            "Make" => make = Some(entry.value.clone()),
+            "Model" => model = Some(entry.value.clone()),
+            "ImageWidth" | "ImageLength" | "PixelXDimension" | "PixelYDimension" => {
+                to_remove.insert(i);
+            }
+            _ => {}
+        }
+    }
+
+    if make.is_some() || model.is_some() {
+        let combined = match (make, model) {
+            (Some(mk), Some(md)) => {
+                if md.to_lowercase().contains(&mk.to_lowercase()) {
+                    md
+                } else {
+                    format!("{} {}", mk, md)
+                }
+            }
+            (Some(mk), None) => mk,
+            (None, Some(md)) => md,
+            _ => unreachable!(),
+        };
+
+        // Remove old make/model entries
+        for (i, entry) in entries.iter().enumerate() {
+            if entry.key == "Make" || entry.key == "Model" {
+                to_remove.insert(i);
+            }
+        }
+
+        entries.push(MetaEntry {
+            key: "Device".to_string(),
+            value: combined,
+        });
+    }
+
+    // Process Orientation and JSON
+    for entry in entries.iter_mut() {
+        if entry.key == "Orientation" {
+            entry.value = match entry.value.as_str() {
+                "Horizontal (normal)" => "0°".to_string(),
+                "Rotate 90 CW" => "90° CW".to_string(),
+                "Rotate 180" => "180°".to_string(),
+                "Rotate 270 CW" => "270° CW".to_string(),
+                _ => entry.value.clone(),
+            };
+        }
+
         // 1. Try JSON pretty-print (ComfyUI workflow/prompt, InvokeAI metadata)
         if entry.value.trim().starts_with('{') || entry.value.trim().starts_with('[') {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&entry.value) {
@@ -47,7 +105,12 @@ pub fn read_metadata(path: &Path) -> Vec<MetaEntry> {
         }
     }
 
-    entries
+    let mut i = 0;
+    entries.retain(|_| {
+        let keep = !to_remove.contains(&i);
+        i += 1;
+        keep
+    });
 }
 
 fn read_exif_with_fallback(path: &Path) -> Vec<MetaEntry> {
