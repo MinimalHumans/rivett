@@ -854,11 +854,14 @@ fn save_jpeg_exif_rotation(path: &Path, rotation: Rotation) -> Result<(), String
         Some(existing) => {
             let mut bytes = existing.to_vec();
             if !patch_exif_orientation(&mut bytes, new_orientation) {
-                // Couldn't find the tag — fall back to building a minimal EXIF
-                build_minimal_exif(new_orientation)
-            } else {
-                bytes
+                // EXIF exists but has no Orientation tag — we cannot insert one without
+                // a full TIFF offset fixup, which would risk corrupting other metadata.
+                return Err(
+                    "JPEG has EXIF data but no Orientation tag; \
+                     cannot save rotation without risking metadata loss".into()
+                );
             }
+            bytes
         }
         None => build_minimal_exif(new_orientation),
     };
@@ -898,15 +901,12 @@ fn combine_rotations(a: Rotation, b: Rotation) -> Rotation {
 /// Scan EXIF bytes for the Orientation IFD entry and overwrite the value.
 /// `bytes` includes the "Exif\0\0" header (6 bytes) followed by a TIFF structure.
 /// Returns `true` if the tag was found and patched.
+/// `bytes` is pure TIFF data — img_parts strips the "Exif\0\0" prefix before returning
+/// from `exif()` and re-adds it in `set_exif()`, so we never see or emit that prefix.
 fn patch_exif_orientation(bytes: &mut Vec<u8>, new_value: u16) -> bool {
-    // Minimum viable EXIF: 6-byte header + 8-byte TIFF header + at least 1 IFD entry
-    if bytes.len() < 14 { return false; }
+    if bytes.len() < 8 { return false; }
 
-    // TIFF starts at offset 6 (after "Exif\0\0")
-    let tiff = &bytes[6..];
-    if tiff.len() < 8 { return false; }
-
-    let little_endian = tiff[0] == b'I' && tiff[1] == b'I';
+    let little_endian = bytes[0] == b'I' && bytes[1] == b'I';
     let read_u16 = |b: &[u8], off: usize| -> u16 {
         if off + 2 > b.len() { return 0; }
         if little_endian { u16::from_le_bytes([b[off], b[off+1]]) }
@@ -918,17 +918,16 @@ fn patch_exif_orientation(bytes: &mut Vec<u8>, new_value: u16) -> bool {
         else             { u32::from_be_bytes([b[off], b[off+1], b[off+2], b[off+3]]) }
     };
 
-    let ifd_offset = read_u32(tiff, 4) as usize;
-    if ifd_offset + 2 > tiff.len() { return false; }
-    let entry_count = read_u16(tiff, ifd_offset) as usize;
+    let ifd_offset = read_u32(bytes, 4) as usize;
+    if ifd_offset + 2 > bytes.len() { return false; }
+    let entry_count = read_u16(bytes, ifd_offset) as usize;
 
     for i in 0..entry_count {
         let entry_off = ifd_offset + 2 + i * 12;
-        if entry_off + 12 > tiff.len() { break; }
-        let tag = read_u16(tiff, entry_off);
+        if entry_off + 12 > bytes.len() { break; }
+        let tag = read_u16(bytes, entry_off);
         if tag == 0x0112 {
-            // Value is at entry_off + 8 in TIFF space → offset + 6 (header) + entry_off + 8 in bytes
-            let val_off = 6 + entry_off + 8;
+            let val_off = entry_off + 8;
             if val_off + 2 > bytes.len() { return false; }
             let encoded = if little_endian { new_value.to_le_bytes() } else { new_value.to_be_bytes() };
             bytes[val_off]     = encoded[0];
@@ -939,22 +938,21 @@ fn patch_exif_orientation(bytes: &mut Vec<u8>, new_value: u16) -> bool {
     false
 }
 
-/// Build a minimal little-endian EXIF segment containing only the Orientation tag.
-/// Layout: "Exif\0\0" + TIFF header (8 bytes) + IFD entry count (2) + 1 entry (12) + IFD terminator (4).
+/// Build minimal pure TIFF data containing only the Orientation tag.
+/// img_parts prepends "Exif\0\0" automatically in set_exif(), so we must not include it.
+/// Layout: TIFF header (8 bytes) + IFD entry count (2) + 1 entry (12) + IFD terminator (4).
 fn build_minimal_exif(orientation: u16) -> Vec<u8> {
-    let mut b = Vec::with_capacity(32);
-    // EXIF header
-    b.extend_from_slice(b"Exif\0\0");
+    let mut b = Vec::with_capacity(26);
     // TIFF header: little-endian, magic 42, IFD offset = 8
-    b.extend_from_slice(&[b'I', b'I', 42, 0]);   // byte order + magic
-    b.extend_from_slice(&8u32.to_le_bytes());      // offset to IFD
+    b.extend_from_slice(&[b'I', b'I', 42, 0]);
+    b.extend_from_slice(&8u32.to_le_bytes());
     // IFD: 1 entry
-    b.extend_from_slice(&1u16.to_le_bytes());      // entry count
-    // IFD entry: tag=0x0112, type=SHORT(3), count=1, value=orientation
-    b.extend_from_slice(&0x0112u16.to_le_bytes()); // tag
-    b.extend_from_slice(&3u16.to_le_bytes());       // type SHORT
-    b.extend_from_slice(&1u32.to_le_bytes());       // count
-    b.extend_from_slice(&(orientation as u32).to_le_bytes()); // value (padded to 4 bytes)
+    b.extend_from_slice(&1u16.to_le_bytes());
+    // IFD entry: tag=0x0112 (Orientation), type=SHORT(3), count=1, value
+    b.extend_from_slice(&0x0112u16.to_le_bytes());
+    b.extend_from_slice(&3u16.to_le_bytes());
+    b.extend_from_slice(&1u32.to_le_bytes());
+    b.extend_from_slice(&(orientation as u32).to_le_bytes());
     // IFD terminator
     b.extend_from_slice(&0u32.to_le_bytes());
     b
