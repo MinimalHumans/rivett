@@ -194,10 +194,8 @@ fn read_exif(path: &Path) -> Vec<MetaEntry> {
     let mut map: HashMap<Tag, &exif::Field> = HashMap::new();
     
     // 1. IFD Filtering: Target IFD0 (PRIMARY) specifically.
-    // In kamadak-exif, IFD0 is In::PRIMARY.
     for field in exif.fields() {
         if field.ifd_num == In::PRIMARY {
-             // Deduplication via dictionary hashing: only store first occurrence in primary IFDs.
              map.entry(field.tag).or_insert(field);
         }
     }
@@ -217,7 +215,9 @@ fn read_exif(path: &Path) -> Vec<MetaEntry> {
         Tag::PixelYDimension,
     ];
 
-    // Identity & Timing
+    // Curated Main Metadata
+    
+    // Identity
     let make = map.get(&Tag::Make).map(|f| f.display_value().to_string());
     let model = map.get(&Tag::Model).map(|f| f.display_value().to_string());
     if let Some(dev) = combine_make_model(make, model) {
@@ -235,7 +235,7 @@ fn read_exif(path: &Path) -> Vec<MetaEntry> {
         main_entries.push(MetaEntry { key: "Software".to_string(), value: f.display_value().to_string(), is_header: false });
     }
 
-    // Light & Optics
+    // Optics
     if let Some(f) = map.get(&Tag::FNumber) {
         main_entries.push(MetaEntry { key: "Aperture".to_string(), value: format!("f/{}", f.display_value()), is_header: false });
     }
@@ -249,7 +249,7 @@ fn read_exif(path: &Path) -> Vec<MetaEntry> {
         main_entries.push(MetaEntry { key: "Focal Length".to_string(), value: format!("{} mm", f.display_value()), is_header: false });
     }
 
-    // Geospatial
+    // GPS
     let lat = map.get(&Tag::GPSLatitude);
     let lat_ref = map.get(&Tag::GPSLatitudeRef);
     if let Some(val) = format_gps_decimal(lat, lat_ref) {
@@ -272,7 +272,7 @@ fn read_exif(path: &Path) -> Vec<MetaEntry> {
         main_entries.push(MetaEntry { key: "Direction".to_string(), value: format!("{}°", f.display_value()), is_header: false });
     }
 
-    // Technical Specs
+    // Technical
     if let Some(f) = map.get(&Tag::Orientation) {
         let val = match f.value.get_uint(0) {
             Some(1) => "0°".to_string(),
@@ -297,7 +297,7 @@ fn read_exif(path: &Path) -> Vec<MetaEntry> {
         }
     }
 
-    // Any remaining tags that aren't in tiers and aren't blocklisted
+    // Remaining non-blocklisted tags
     let handled_tags: Vec<Tag> = vec![
         Tag::Make, Tag::Model, Tag::DateTimeOriginal, Tag::OffsetTimeOriginal, Tag::SubSecTimeOriginal,
         Tag::Software, Tag::FNumber, Tag::ExposureTime, Tag::PhotographicSensitivity, Tag::FocalLength,
@@ -320,11 +320,7 @@ fn read_exif(path: &Path) -> Vec<MetaEntry> {
     }
 
     let mut final_entries = Vec::new();
-
-    if !main_entries.is_empty() {
-        final_entries.push(MetaEntry { key: "Main Metadata".to_string(), value: String::new(), is_header: true });
-        final_entries.extend(main_entries);
-    }
+    final_entries.extend(main_entries);
 
     if !other_entries.is_empty() {
         final_entries.push(MetaEntry { key: "Other Metadata".to_string(), value: String::new(), is_header: true });
@@ -352,8 +348,7 @@ fn combine_make_model(make: Option<String>, model: Option<String>) -> Option<Str
 }
 
 fn format_iso_timestamp(dt: Option<String>, offset: Option<String>, subsec: Option<String>) -> Option<String> {
-    let dt = dt?; // DateTimeOriginal is required
-    // dt is usually "YYYY-MM-DD HH:MM:SS"
+    let dt = dt?; 
     let parts: Vec<&str> = dt.split_whitespace().collect();
     if parts.len() != 2 { return Some(dt); }
 
@@ -366,7 +361,6 @@ fn format_iso_timestamp(dt: Option<String>, offset: Option<String>, subsec: Opti
     }
     if let Some(off) = offset {
         let off = off.trim();
-        // offset is usually "+HH:MM" or "HH:MM"
         if off.starts_with('+') || off.starts_with('-') {
             result.push_str(off);
         } else {

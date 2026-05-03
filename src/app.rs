@@ -529,32 +529,47 @@ impl RivettApp {
             .min_width(280.0)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
+                    let label_kv = |ui: &mut egui::Ui, key: &str, value: String| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            ui.label(egui::RichText::new(format!("{key}:")).strong());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(value);
+                            });
+                        });
+                        ui.add_space(2.0);
+                    };
+
                     ui.heading("Image Info");
                     ui.separator();
 
                     if let Some(path) = self.current_path.clone() {
-                        ui.label(format!("File: {}", path.file_name()
-                            .and_then(|n| n.to_str()).unwrap_or("?")));
-                        ui.label(format!("Path: {}", path.display()));
+                        label_kv(ui, "File", path.file_name()
+                            .and_then(|n| n.to_str()).unwrap_or("?").to_string());
+                        
+                        // Path is usually long, so we might want to keep it as a label or handle it specially.
+                        // But user asked for key:value layout.
+                        label_kv(ui, "Path", path.display().to_string());
 
                         if let Ok(meta) = path.metadata() {
                             let kb = meta.len() as f64 / 1024.0;
-                            if kb < 1024.0 {
-                                ui.label(format!("Size: {kb:.1} KB"));
+                            let size_str = if kb < 1024.0 {
+                                format!("{kb:.1} KB")
                             } else {
-                                ui.label(format!("Size: {:.1} MB", kb / 1024.0));
-                            }
+                                format!("{:.1} MB", kb / 1024.0)
+                            };
+                            label_kv(ui, "Size", size_str);
                         }
 
                         let dim = self.viewer.image_size;
                         if dim != Vec2::ZERO {
-                            ui.label(format!("Dimensions: {}×{}", dim.x as u32, dim.y as u32));
+                            label_kv(ui, "Dimensions", format!("{}×{}", dim.x as u32, dim.y as u32));
                         }
 
-                        ui.label(format!("Zoom: {:.0}%", self.viewer.zoom * 100.0));
+                        label_kv(ui, "Zoom", format!("{:.0}%", self.viewer.zoom * 100.0));
 
                         if let Some(ref listing) = self.listing {
-                            ui.label(listing.position_label());
+                            label_kv(ui, "Position", listing.position_label());
                         }
 
                         ui.separator();
@@ -600,11 +615,11 @@ impl RivettApp {
                             None    => "— (unrated)".to_string(),
                             Some(r) => format!("{} ({})", "★".repeat(r as usize), r),
                         };
-                        ui.label(format!("Rating: {stars}"));
+                        label_kv(ui, "Rating", stars);
 
                         if let Some(ref rec) = self.current_record {
                             if let Some(ref note) = rec.note {
-                                ui.label(format!("Note: {note}"));
+                                label_kv(ui, "Note", note.clone());
                             }
                         }
 
@@ -639,20 +654,8 @@ impl RivettApp {
                                         );
                                     });
                                 } else {
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 4.0;
-                                        let key = if entry.key.ends_with(':') {
-                                            entry.key.clone()
-                                        } else {
-                                            format!("{}:", entry.key)
-                                        };
-                                        ui.label(egui::RichText::new(key).strong());
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            ui.label(&entry.value);
-                                        });
-                                    });
+                                    label_kv(ui, &entry.key.replace(':', ""), entry.value.clone());
                                 }
-                                ui.add_space(2.0);
                             }
                         }
                     } else {
