@@ -36,8 +36,16 @@ pub struct RivettApp {
     pending_drag_out:  bool, // set on gesture detection; consumed at top of next update()
     middle_btn_on_canvas: bool, // tracks middle button pressed-while-hovering canvas
 
+    // Save As state
+    save_as_state:   Option<SaveAsState>,
+
     #[allow(dead_code)]
     settings:        AppSettings,
+}
+
+struct SaveAsState {
+    output_path:       std::path::PathBuf,
+    preserve_metadata: bool,
 }
 
 impl RivettApp {
@@ -526,6 +534,74 @@ impl RivettApp {
         if ctrl && !input.modifiers.shift && input.key_pressed(Key::S) {
             self.save_current_rotation(ctx);
         }
+        if ctrl && input.modifiers.shift && input.key_pressed(Key::S) {
+            self.save_as(ctx);
+        }
+    }
+
+    // ── Save As ──────────────────────────────────────────────────────────
+
+    fn save_as(&mut self, _ctx: &Context) {
+        let Some(path) = self.current_path.clone() else { return };
+
+        let dialog = rfd::FileDialog::new()
+            .set_file_name(path.file_name().unwrap_or_default().to_string_lossy())
+            .add_filter("JPEG", &["jpg", "jpeg"])
+            .add_filter("PNG", &["png"]);
+
+        if let Some(output_path) = dialog.save_file() {
+            self.save_as_state = Some(SaveAsState {
+                output_path,
+                preserve_metadata: true,
+            });
+        }
+    }
+
+    fn draw_save_as_modal(&mut self, ctx: &Context) {
+        let Some(mut state) = self.save_as_state.take() else { return };
+        let mut open = true;
+
+        egui::Window::new("Save Image As")
+            .collapsible(false)
+            .resizable(false)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.screen_rect().center())
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.vertical(|ui| {
+                    ui.label(format!("Path: {}", state.output_path.display()));
+                    ui.add_space(8.0);
+
+                    ui.checkbox(&mut state.preserve_metadata, "Preserve metadata");
+                    ui.add_space(12.0);
+
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() {
+                            self.perform_save_as(&state, ctx);
+                            open = false;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            open = false;
+                        }
+                    });
+                });
+            });
+
+        if open {
+            self.save_as_state = Some(state);
+        }
+    }
+
+    fn perform_save_as(&mut self, state: &SaveAsState, ctx: &Context) {
+        let Some(src_path) = self.current_path.clone() else { return };
+        
+        let rotation = self.session.rotation_for(&src_path);
+        let cached = self.image_cache.get(&src_path);
+        
+        match save_image_as(&src_path, &state.output_path, rotation, cached, state.preserve_metadata) {
+            Ok(()) => self.toast("Saved successfully"),
+            Err(e) => self.toast(format!("Save failed: {e}")),
+        }
     }
 
     // ── Info panel ────────────────────────────────────────────────────────
@@ -841,6 +917,10 @@ impl RivettApp {
                 self.reveal_in_file_manager();
                 ui.close_menu();
             }
+            if ui.add_enabled(has_image, egui::Button::new("Save as...").shortcut_text("Ctrl+Shift+S")).clicked() {
+                self.save_as(ctx);
+                ui.close_menu();
+            }
 
             ui.separator();
 
@@ -950,6 +1030,83 @@ fn rotation_to_exif_orientation(r: Rotation) -> u16 {
         Rotation::Cw180 => 3,
         Rotation::Cw270 => 8,
     }
+}
+
+/// Save the image to a new path with optional metadata preservation.
+fn save_image_as(
+    src_path: &Path,
+    dst_path: &Path,
+    rotation: Rotation,
+    cached: Option<&crate::image_loader::DecodedImage>,
+    preserve_metadata: bool,
+) -> Result<(), String> {
+    use img_parts::{Bytes, ImageEXIF, jpeg::Jpeg, png::Png};
+
+    // 1. Get the source image
+    let decoded = cached
+        .ok_or_else(|| "image not in cache — navigate away and back, then retry".to_string())?;
+    let src = image::RgbaImage::from_raw(decoded.width, decoded.height, decoded.rgba.clone())
+        .ok_or("invalid pixel buffer")?;
+    let rotated = match rotation {
+        Rotation::None  => image::DynamicImage::ImageRgba8(src),
+        Rotation::Cw90  => image::DynamicImage::ImageRgba8(image::imageops::rotate90(&src)),
+        Rotation::Cw180 => image::DynamicImage::ImageRgba8(image::imageops::rotate180(&src)),
+        Rotation::Cw270 => image::DynamicImage::ImageRgba8(image::imageops::rotate270(&src)),
+    };
+
+    // 2. Determine output format
+    let ext = dst_path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+    let format = match ext.as_str() {
+        "jpg" | "jpeg" => image::ImageFormat::Jpeg,
+        "png" => image::ImageFormat::Png,
+        _ => return Err("Unsupported output format (use .jpg or .png)".to_string()),
+    };
+
+    // 3. Encode image
+    let mut encoded_data = Vec::new();
+    rotated.write_to(&mut std::io::Cursor::new(&mut encoded_data), format).map_err(|e| e.to_string())?;
+
+    // 4. Preserve metadata if requested
+    if preserve_metadata {
+        if format == image::ImageFormat::Jpeg {
+            if let Ok(src_bytes) = std::fs::read(src_path) {
+                let exif = if let Ok(src_jpeg) = Jpeg::from_bytes(Bytes::from(src_bytes.clone())) {
+                    src_jpeg.exif().map(|b| b.clone())
+                } else {
+                    None
+                };
+
+                if let Some(exif_bytes) = exif {
+                    if let Ok(mut dst_jpeg) = Jpeg::from_bytes(Bytes::from(encoded_data.clone())) {
+                        dst_jpeg.set_exif(Some(exif_bytes));
+                        encoded_data = dst_jpeg.encoder().bytes().to_vec();
+                    }
+                }
+            }
+        } else if format == image::ImageFormat::Png {
+            if let Ok(src_bytes) = std::fs::read(src_path) {
+                if let Ok(src_png) = Png::from_bytes(Bytes::from(src_bytes)) {
+                    if let Ok(mut dst_png) = Png::from_bytes(Bytes::from(encoded_data.clone())) {
+                        for chunk in src_png.chunks() {
+                            let kind = chunk.kind();
+                            if kind == *b"tEXt" || kind == *b"iTXt" || kind == *b"zTXt" || kind == *b"eXIf" {
+                                let len = dst_png.chunks().len();
+                                if len > 0 {
+                                    dst_png.chunks_mut().insert(len - 1, chunk.clone());
+                                } else {
+                                    dst_png.chunks_mut().push(chunk.clone());
+                                }
+                            }
+                        }
+                        encoded_data = dst_png.encoder().bytes().to_vec();
+                    }
+                }
+            }
+        }
+    }
+
+    std::fs::write(dst_path, encoded_data).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Combine two rotations: result is `a` followed by `b`.
@@ -1102,6 +1259,8 @@ impl eframe::App for RivettApp {
         if self.show_info_panel {
             self.draw_info_panel(ctx);
         }
+
+        self.draw_save_as_modal(ctx);
 
         CentralPanel::default().show(ctx, |ui| {
             let canvas = ui.max_rect();
