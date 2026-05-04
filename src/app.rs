@@ -472,18 +472,20 @@ impl RivettApp {
             let _ = self.settings.save();
         }
 
-        for r in 0..=5 {
-            let key = match r {
-                0 => Key::Num0,
-                1 => Key::Num1,
-                2 => Key::Num2,
-                3 => Key::Num3,
-                4 => Key::Num4,
-                5 => Key::Num5,
-                _ => unreachable!(),
-            };
-            let rating = if r == 0 { None } else { Some(r as u8) };
-            if input.key_pressed(key) { self.set_rating(rating); }
+        if input.modifiers.is_none() {
+            for r in 0..=5 {
+                let key = match r {
+                    0 => Key::Num0,
+                    1 => Key::Num1,
+                    2 => Key::Num2,
+                    3 => Key::Num3,
+                    4 => Key::Num4,
+                    5 => Key::Num5,
+                    _ => unreachable!(),
+                };
+                let rating = if r == 0 { None } else { Some(r as u8) };
+                if input.key_pressed(key) { self.set_rating(rating); }
+            }
         }
 
         if input.key_pressed(Key::H) { self.hide_current(ctx); }
@@ -541,37 +543,40 @@ impl RivettApp {
                         ui.add_space(2.0);
                     };
 
-                    ui.heading("Image Info");
-                    ui.separator();
-
                     if let Some(path) = self.current_path.clone() {
-                        label_kv(ui, "File", path.file_name()
-                            .and_then(|n| n.to_str()).unwrap_or("?").to_string());
-                        
-                        // Path is usually long, so we might want to keep it as a label or handle it specially.
-                        // But user asked for key:value layout.
-                        label_kv(ui, "Path", path.display().to_string());
+                        ui.horizontal(|ui| {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if let Some(ref listing) = self.listing {
+                                    ui.label(egui::RichText::new(format!("{}/{}", listing.current_index + 1, listing.files.len())).strong());
+                                }
+                                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+                                    ui.add(egui::Label::new(egui::RichText::new(name).strong()).truncate());
+                                });
+                            });
+                        });
+                        ui.separator();
 
-                        if let Ok(meta) = path.metadata() {
-                            let kb = meta.len() as f64 / 1024.0;
-                            let size_str = if kb < 1024.0 {
-                                format!("{kb:.1} KB")
-                            } else {
-                                format!("{:.1} MB", kb / 1024.0)
-                            };
-                            label_kv(ui, "Size", size_str);
+                        if let Some(parent) = path.parent() {
+                            label_kv(ui, "Folder", parent.display().to_string());
                         }
 
                         let dim = self.viewer.image_size;
                         if dim != Vec2::ZERO {
-                            label_kv(ui, "Dimensions", format!("{}×{}", dim.x as u32, dim.y as u32));
+                            let mut info = format!("{}×{} 8bit RGB", dim.x as u32, dim.y as u32);
+                            if let Ok(meta) = path.metadata() {
+                                let kb = meta.len() as f64 / 1024.0;
+                                let size_str = if kb < 1024.0 {
+                                    format!("{kb:.1} KB")
+                                } else {
+                                    format!("{:.1} MB", kb / 1024.0)
+                                };
+                                info = format!("{info} ({size_str})");
+                            }
+                            label_kv(ui, "Size", info);
                         }
 
                         label_kv(ui, "Zoom", format!("{:.0}%", self.viewer.zoom * 100.0));
-
-                        if let Some(ref listing) = self.listing {
-                            label_kv(ui, "Position", listing.position_label());
-                        }
 
                         ui.separator();
                         ui.heading("Viewing Adjustment");
@@ -594,7 +599,7 @@ impl RivettApp {
                             let painter = ui.painter();
                             painter.rect_filled(rect, 2.0, egui::Color32::from_gray(30));
                             
-                            let mut paint_channel = |bins: &[f32], color: egui::Color32| {
+                            let paint_channel = |bins: &[f32], color: egui::Color32| {
                                 if bins.is_empty() { return; }
                                 let bin_width = rect.width() / bins.len() as f32;
                                 let mut points = Vec::with_capacity(bins.len() * 2);

@@ -152,15 +152,29 @@ impl ViewerState {
         self.pan = Vec2::ZERO;
     }
 
-    /// Toggle between "Fit to window" and the previous zoom level.
+    /// Cycle between "Fit to window", "100%", and "Custom zoom".
     pub fn toggle_fit(&mut self, canvas_size: Vec2) {
         if self.fit_to_window {
+            // From Fit -> 100%
             self.fit_to_window = false;
-            self.zoom = self.saved_zoom.take().unwrap_or(1.0);
+            self.zoom = 1.0;
+            self.pan = Vec2::ZERO;
+        } else if (self.zoom - 1.0).abs() < 1e-3 {
+            // From 100% -> Custom (if exists) or Fit
+            if let Some(saved) = self.saved_zoom.take() {
+                if (saved - 1.0).abs() > 1e-3 {
+                    self.zoom = saved;
+                    return;
+                }
+            }
+            self.fit_to_window = true;
+            self.pan = Vec2::ZERO;
+            self.recalc_fit(canvas_size);
         } else {
+            // From Custom -> Fit
             self.saved_zoom = Some(self.zoom);
             self.fit_to_window = true;
-            self.pan = Vec2::ZERO; // Center
+            self.pan = Vec2::ZERO;
             self.recalc_fit(canvas_size);
         }
     }
