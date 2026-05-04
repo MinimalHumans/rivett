@@ -409,8 +409,13 @@ impl RivettApp {
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
+    fn apply_sort_order(&mut self, order: crate::settings::SortOrder, ctx: &Context) {
+        self.session.sort_order = order;
+        self.refresh_listing(ctx);
+    }
+
     fn session_sort_order(&self) -> crate::settings::SortOrder {
-        crate::settings::SortOrder::Name
+        self.session.sort_order
     }
 
     fn session_is_ignored(&self, _path: &std::path::Path) -> bool {
@@ -773,6 +778,21 @@ impl RivettApp {
                 if ui.button("Clear Filter").clicked() {
                     self.apply_local_filter(None, ctx);
                     ui.close_menu();
+                }
+            });
+
+            ui.menu_button("Sort by", |ui| {
+                use crate::settings::SortOrder;
+                for (label, order) in [
+                    ("Name",          SortOrder::Name),
+                    ("Date Modified", SortOrder::DateModified),
+                    ("File Size",     SortOrder::FileSize),
+                ] {
+                    let is_selected = self.session.sort_order == order;
+                    if ui.selectable_label(is_selected, label).clicked() {
+                        self.apply_sort_order(order, ctx);
+                        ui.close_menu();
+                    }
                 }
             });
 
