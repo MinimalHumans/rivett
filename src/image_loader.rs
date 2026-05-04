@@ -193,30 +193,53 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::sync::mpsc::{self, Receiver, Sender};
 
+/// Histograms for each color channel.
+#[derive(Clone)]
+pub struct Histograms {
+    pub r: Vec<f32>,
+    pub g: Vec<f32>,
+    pub b: Vec<f32>,
+}
+
 /// A fully decoded RGBA image ready for upload to the GPU.
 #[derive(Clone)]
 pub struct DecodedImage {
-    pub rgba:      Vec<u8>,
-    pub width:     u32,
-    pub height:    u32,
-    /// Luminance histogram (256 bins).
-    pub histogram: Vec<f32>,
+    pub rgba:       Vec<u8>,
+    pub width:      u32,
+    pub height:     u32,
+    pub histograms: Histograms,
 }
 
 impl DecodedImage {
     pub fn new(rgba: Vec<u8>, width: u32, height: u32) -> Self {
-        let mut hist = vec![0u32; 256];
+        let mut hist_r = vec![0u32; 256];
+        let mut hist_g = vec![0u32; 256];
+        let mut hist_b = vec![0u32; 256];
+
         for chunk in rgba.chunks_exact(4) {
-            // Simple luminance: 0.299R + 0.587G + 0.114B
-            let l = (chunk[0] as f32 * 0.299 + chunk[1] as f32 * 0.587 + chunk[2] as f32 * 0.114) as usize;
-            hist[l.min(255)] += 1;
+            let r = chunk[0] as usize;
+            let g = chunk[1] as usize;
+            let b = chunk[2] as usize;
+
+            hist_r[r] += 1;
+            hist_g[g] += 1;
+            hist_b[b] += 1;
         }
         
-        // Normalize histogram
-        let max = *hist.iter().max().unwrap_or(&1) as f32;
-        let histogram = hist.into_iter().map(|v| v as f32 / max).collect();
+        // Normalize histograms
+        let max_r = (*hist_r.iter().max().unwrap_or(&1)).max(1) as f32;
+        let max_g = (*hist_g.iter().max().unwrap_or(&1)).max(1) as f32;
+        let max_b = (*hist_b.iter().max().unwrap_or(&1)).max(1) as f32;
 
-        Self { rgba, width, height, histogram }
+        // We can normalize each channel individually or by the global max.
+        // Usually, individual normalization is better for visibility of each channel.
+        let histograms = Histograms {
+            r: hist_r.into_iter().map(|v| v as f32 / max_r).collect(),
+            g: hist_g.into_iter().map(|v| v as f32 / max_g).collect(),
+            b: hist_b.into_iter().map(|v| v as f32 / max_b).collect(),
+        };
+
+        Self { rgba, width, height, histograms }
     }
 }
 

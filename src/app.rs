@@ -588,22 +588,29 @@ impl RivettApp {
 
                         if let Some(img) = self.image_cache.get(&path) {
                             ui.separator();
-                            ui.heading("Histogram (Luminance)");
+                            ui.heading("Histogram");
                             let hist_height = 64.0;
                             let (rect, _) = ui.allocate_at_least(egui::vec2(ui.available_width(), hist_height), egui::Sense::hover());
                             let painter = ui.painter();
                             painter.rect_filled(rect, 2.0, egui::Color32::from_gray(30));
                             
-                            let bin_width = rect.width() / 256.0;
-                            for (i, &val) in img.histogram.iter().enumerate() {
-                                let h = val * hist_height;
-                                let x = rect.min.x + i as f32 * bin_width;
-                                let bar_rect = egui::Rect::from_min_max(
-                                    egui::pos2(x, rect.max.y - h),
-                                    egui::pos2(x + bin_width, rect.max.y)
-                                );
-                                painter.rect_filled(bar_rect, 0.0, egui::Color32::from_gray(180));
-                            }
+                            let mut paint_channel = |bins: &[f32], color: egui::Color32| {
+                                if bins.is_empty() { return; }
+                                let bin_width = rect.width() / bins.len() as f32;
+                                let mut points = Vec::with_capacity(bins.len() * 2);
+                                for (i, &val) in bins.iter().enumerate() {
+                                    let x = rect.min.x + i as f32 * bin_width;
+                                    let h = val * hist_height;
+                                    let y = rect.max.y - h;
+                                    points.push(egui::pos2(x, y));
+                                    points.push(egui::pos2(x + bin_width, y));
+                                }
+                                painter.add(egui::Shape::line(points, egui::Stroke::new(1.2, color)));
+                            };
+
+                            paint_channel(&img.histograms.r, egui::Color32::from_rgb(255, 50, 50));
+                            paint_channel(&img.histograms.g, egui::Color32::from_rgb(50, 255, 50));
+                            paint_channel(&img.histograms.b, egui::Color32::from_rgb(50, 50, 255));
                         }
 
                         ui.separator();
