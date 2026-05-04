@@ -566,6 +566,13 @@ impl RivettApp {
                             label_kv(ui, "Folder", parent.display().to_string());
                         }
 
+                        if let Ok(meta) = path.metadata() {
+                            if let Ok(modified) = meta.modified() {
+                                let datetime: chrono::DateTime<chrono::Local> = modified.into();
+                                label_kv(ui, "Date", datetime.format("%Y-%m-%d %H:%M:%S").to_string());
+                            }
+                        }
+
                         let dim = self.viewer.image_size;
                         if dim != Vec2::ZERO {
                             let mut info = format!("{}×{} 8bit RGB", dim.x as u32, dim.y as u32);
