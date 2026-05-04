@@ -75,6 +75,7 @@ impl RivettApp {
             delete_confirm:  None,
             pending_drag_out:     false,
             middle_btn_on_canvas: false,
+            save_as_state:   None,
             settings,
         };
 
@@ -386,8 +387,10 @@ impl RivettApp {
     fn save_current_rotation(&mut self, ctx: &Context) {
         let Some(path) = self.current_path.clone() else { return };
         let rotation = self.session.rotation_for(&path);
-        if rotation.is_identity() {
-            self.toast("No rotation to save");
+        let strip_metadata = self.session.is_metadata_stripped(&path);
+        
+        if rotation.is_identity() && !strip_metadata {
+            self.toast("No changes to save");
             return;
         }
 
@@ -396,17 +399,27 @@ impl RivettApp {
             return;
         };
 
+        // If we only want to strip metadata (no rotation), or if it's a format
+        // where we always re-encode anyway, we can use save_image_as to the same path.
         let cached_clone = self.image_cache.get(&path).cloned();
-        let result = match fmt {
-            SupportedFormat::Jpeg => save_jpeg_exif_rotation(&path, rotation),
-            SupportedFormat::Svg  => { self.toast("Cannot save rotation for SVG files"); return; }
-            SupportedFormat::Raw  => { self.toast("Cannot save rotation for RAW files"); return; }
-            _                     => save_pixel_rotation(&path, fmt, rotation, cached_clone),
+        
+        let result = if strip_metadata {
+            save_image_as(&path, &path, rotation, cached_clone.as_ref(), false)
+        } else {
+            match fmt {
+                SupportedFormat::Jpeg => save_jpeg_exif_rotation(&path, rotation),
+                SupportedFormat::Svg  => { self.toast("Cannot save changes for SVG files"); return; }
+                SupportedFormat::Raw  => { self.toast("Cannot save changes for RAW files"); return; }
+                _                     => save_pixel_rotation(&path, fmt, rotation, cached_clone),
+            }
         };
 
         match result {
             Ok(()) => {
                 self.session.set_rotation(path.clone(), Rotation::None);
+                if strip_metadata {
+                    self.session.toggle_metadata_strip(path.clone());
+                }
                 self.image_cache.remove(&path);
                 self.load_current(ctx, true);
                 self.toast("Saved");
@@ -503,6 +516,12 @@ impl RivettApp {
 
         if input.key_pressed(Key::H) { self.hide_current(ctx); }
 
+        if input.key_pressed(Key::M) {
+            if let Some(path) = self.current_path.clone() {
+                self.session.toggle_metadata_strip(path);
+            }
+        }
+
         if input.key_pressed(Key::OpenBracket) {
             self.rotate_current(false, ctx);
         }
@@ -559,14 +578,13 @@ impl RivettApp {
 
     fn draw_save_as_modal(&mut self, ctx: &Context) {
         let Some(mut state) = self.save_as_state.take() else { return };
-        let mut open = true;
+        let mut should_close = false;
 
         egui::Window::new("Save Image As")
             .collapsible(false)
             .resizable(false)
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(ctx.screen_rect().center())
-            .open(&mut open)
             .show(ctx, |ui| {
                 ui.vertical(|ui| {
                     ui.label(format!("Path: {}", state.output_path.display()));
@@ -577,22 +595,22 @@ impl RivettApp {
 
                     ui.horizontal(|ui| {
                         if ui.button("Save").clicked() {
-                            self.perform_save_as(&state, ctx);
-                            open = false;
+                            self.perform_save_as(&state);
+                            should_close = true;
                         }
                         if ui.button("Cancel").clicked() {
-                            open = false;
+                            should_close = true;
                         }
                     });
                 });
             });
 
-        if open {
+        if !should_close {
             self.save_as_state = Some(state);
         }
     }
 
-    fn perform_save_as(&mut self, state: &SaveAsState, ctx: &Context) {
+    fn perform_save_as(&mut self, state: &SaveAsState) {
         let Some(src_path) = self.current_path.clone() else { return };
         
         let rotation = self.session.rotation_for(&src_path);
@@ -903,6 +921,23 @@ impl RivettApp {
             if ui.add_enabled(has_image, egui::Button::new("Rotate Counter-Clockwise").shortcut_text("[")).clicked() {
                 self.rotate_current(false, ctx);
                 ui.close_menu();
+            }
+
+            ui.separator();
+
+            let has_metadata = !self.metadata.is_empty();
+            let is_stripped = self.current_path.as_ref().map(|p| self.session.is_metadata_stripped(p)).unwrap_or(false);
+            if ui.add_enabled(has_image && has_metadata, egui::Checkbox::new(&mut is_stripped.clone(), "Strip metadata")).clicked() {
+                if let Some(path) = self.current_path.clone() {
+                    self.session.toggle_metadata_strip(path);
+                }
+                ui.close_menu();
+            }
+            // Overwrite the checkbox value manually since we can't easily pass the mutable reference into egui::Checkbox in this structure
+            if let Some(path) = self.current_path.as_ref() {
+                if self.session.is_metadata_stripped(path) {
+                    ui.label(egui::RichText::new("  (* pending save)").small().italics());
+                }
             }
 
             ui.separator();
@@ -1366,6 +1401,7 @@ impl eframe::App for RivettApp {
             let current_has_changes = self.current_path.as_ref().map(|p| {
                 self.session.pending_rotations.contains_key(p)
                     || self.session.pending_crops.contains_key(p)
+                    || self.session.pending_metadata_strips.contains(p)
             }).unwrap_or(false);
             if current_has_changes {
                 let dot_pos = egui::pos2(canvas.max.x - 14.0, canvas.min.y + 14.0);
@@ -1374,7 +1410,7 @@ impl eframe::App for RivettApp {
                     egui::Id::new("modified_badge"),
                     egui::Sense::hover(),
                 );
-                response.on_hover_text("Unsaved changes (rotation, crops) — Ctrl+S to save");
+                response.on_hover_text("Unsaved changes (rotation, crops, metadata) — Ctrl+S to save");
                 painter.circle_filled(dot_pos, 6.0, egui::Color32::from_rgb(255, 180, 0));
             }
 

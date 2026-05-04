@@ -143,6 +143,7 @@ impl RatingFilter {
 pub struct SessionState {
     pub pending_rotations: HashMap<PathBuf, Rotation>,
     pub pending_crops:     HashMap<PathBuf, CropRect>,
+    pub pending_metadata_strips: HashSet<PathBuf>,
     pub ignored_images:    HashSet<PathBuf>,
     pub rating_filter:     Option<RatingFilter>,
     pub sort_order:        SortOrder,
@@ -160,15 +161,30 @@ impl SessionState {
 
     /// `true` if any save-or-discard prompt should be shown before closing.
     pub fn has_pending_changes(&self) -> bool {
-        !self.pending_crops.is_empty() || !self.pending_rotations.is_empty()
+        !self.pending_crops.is_empty() || !self.pending_rotations.is_empty() || !self.pending_metadata_strips.is_empty()
     }
 
     /// Clear all session state (hard refresh / `Ctrl+Shift+R`).
     pub fn flush(&mut self) {
         self.pending_rotations.clear();
         self.pending_crops.clear();
+        self.pending_metadata_strips.clear();
         self.ignored_images.clear();
         self.rating_filter = None;
+    }
+
+    // ── Metadata Strip ────────────────────────────────────────────────────
+
+    pub fn toggle_metadata_strip(&mut self, path: PathBuf) {
+        if self.pending_metadata_strips.contains(&path) {
+            self.pending_metadata_strips.remove(&path);
+        } else {
+            self.pending_metadata_strips.insert(path);
+        }
+    }
+
+    pub fn is_metadata_stripped(&self, path: &PathBuf) -> bool {
+        self.pending_metadata_strips.contains(path)
     }
 
     // ── Rotation ──────────────────────────────────────────────────────────
