@@ -70,11 +70,23 @@
                             <File Id='exe0' Name='rivett.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\rivett.exe' KeyPath='yes'/>
                         </Component>
 
-                        <Component Id='RegistryProgId' Guid='*'>
-                            <RegistryValue Root='HKMU' Key='Software\Classes\Rivett.Image' Type='string' Value='Rivett Image' KeyPath='yes' />
-                            <RegistryValue Root='HKMU' Key='Software\Classes\Rivett.Image' Name='PerceivedType' Type='string' Value='image' />
-                            <RegistryValue Root='HKMU' Key='Software\Classes\Rivett.Image\shell\open\command' Type='string' Value='&quot;[Bin]rivett.exe&quot; &quot;%1&quot;' />
-                        </Component>
+                        <!-- Specific ProgIds to allow sorting by Type in Windows Explorer -->
+                        <Component Id='ProgId_Png' Guid='*'><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.png' Type='string' Value='PNG Image' KeyPath='yes' /><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.png\shell\open\command' Type='string' Value='&quot;[Bin]rivett.exe&quot; &quot;%1&quot;' /></Component>
+                        <Component Id='ProgId_Jpg' Guid='*'><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.jpg' Type='string' Value='JPEG Image' KeyPath='yes' /><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.jpg\shell\open\command' Type='string' Value='&quot;[Bin]rivett.exe&quot; &quot;%1&quot;' /></Component>
+                        <Component Id='ProgId_Webp' Guid='*'><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.webp' Type='string' Value='WebP Image' KeyPath='yes' /><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.webp\shell\open\command' Type='string' Value='&quot;[Bin]rivett.exe&quot; &quot;%1&quot;' /></Component>
+                        <Component Id='ProgId_Bmp' Guid='*'><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.bmp' Type='string' Value='BMP Image' KeyPath='yes' /><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.bmp\shell\open\command' Type='string' Value='&quot;[Bin]rivett.exe&quot; &quot;%1&quot;' /></Component>
+                        <Component Id='ProgId_Gif' Guid='*'><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.gif' Type='string' Value='GIF Image' KeyPath='yes' /><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.gif\shell\open\command' Type='string' Value='&quot;[Bin]rivett.exe&quot; &quot;%1&quot;' /></Component>
+                        <Component Id='ProgId_Tiff' Guid='*'><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.tiff' Type='string' Value='TIFF Image' KeyPath='yes' /><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.tiff\shell\open\command' Type='string' Value='&quot;[Bin]rivett.exe&quot; &quot;%1&quot;' /></Component>
+                        <Component Id='ProgId_Exr' Guid='*'><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.exr' Type='string' Value='OpenEXR Image' KeyPath='yes' /><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.exr\shell\open\command' Type='string' Value='&quot;[Bin]rivett.exe&quot; &quot;%1&quot;' /></Component>
+                        <Component Id='ProgId_Svg' Guid='*'><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.svg' Type='string' Value='SVG Image' KeyPath='yes' /><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.svg\shell\open\command' Type='string' Value='&quot;[Bin]rivett.exe&quot; &quot;%1&quot;' /></Component>
+                        
+                        <!-- RAW Formats -->
+                        <Component Id='ProgId_Cr2' Guid='*'><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.cr2' Type='string' Value='Canon RAW Image (CR2)' KeyPath='yes' /><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.cr2\shell\open\command' Type='string' Value='&quot;[Bin]rivett.exe&quot; &quot;%1&quot;' /></Component>
+                        <Component Id='ProgId_Cr3' Guid='*'><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.cr3' Type='string' Value='Canon RAW Image (CR3)' KeyPath='yes' /><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.cr3\shell\open\command' Type='string' Value='&quot;[Bin]rivett.exe&quot; &quot;%1&quot;' /></Component>
+                        <Component Id='ProgId_Arw' Guid='*'><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.arw' Type='string' Value='Sony RAW Image' KeyPath='yes' /><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.arw\shell\open\command' Type='string' Value='&quot;[Bin]rivett.exe&quot; &quot;%1&quot;' /></Component>
+                        <Component Id='ProgId_Nef' Guid='*'><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.nef' Type='string' Value='Nikon RAW Image' KeyPath='yes' /><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.nef\shell\open\command' Type='string' Value='&quot;[Bin]rivett.exe&quot; &quot;%1&quot;' /></Component>
+                        <Component Id='ProgId_Raf' Guid='*'><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.raf' Type='string' Value='Fujifilm RAW Image' KeyPath='yes' /><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.raf\shell\open\command' Type='string' Value='&quot;[Bin]rivett.exe&quot; &quot;%1&quot;' /></Component>
+                        <Component Id='ProgId_Dng' Guid='*'><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.dng' Type='string' Value='Digital Negative Image' KeyPath='yes' /><RegistryValue Root='HKMU' Key='Software\Classes\Rivett.dng\shell\open\command' Type='string' Value='&quot;[Bin]rivett.exe&quot; &quot;%1&quot;' /></Component>
 
                         <Component Id='RegistryShell' Guid='*'>
                             <RegistryValue Root='HKMU' Key='Software\Classes\*\shell\Rivett' Name='Icon' Type='string' Value='[Bin]rivett.exe' KeyPath='yes' />
@@ -82,26 +94,48 @@
                         </Component>
 
                         <Component Id='AssocPng' Guid='*'>
-                            <RegistryValue Root='HKMU' Key='Software\Classes\.png\OpenWithProgids' Name='Rivett.Image' Type='string' Value='' KeyPath='yes' />
+                            <RegistryValue Root='HKMU' Key='Software\Classes\.png\OpenWithProgids' Name='Rivett.png' Type='string' Value='' KeyPath='yes' />
                         </Component>
                         <Component Id='AssocJpg' Guid='*'>
-                            <RegistryValue Root='HKMU' Key='Software\Classes\.jpg\OpenWithProgids' Name='Rivett.Image' Type='string' Value='' KeyPath='yes' />
-                            <RegistryValue Root='HKMU' Key='Software\Classes\.jpeg\OpenWithProgids' Name='Rivett.Image' Type='string' Value='' />
+                            <RegistryValue Root='HKMU' Key='Software\Classes\.jpg\OpenWithProgids' Name='Rivett.jpg' Type='string' Value='' KeyPath='yes' />
+                            <RegistryValue Root='HKMU' Key='Software\Classes\.jpeg\OpenWithProgids' Name='Rivett.jpg' Type='string' Value='' />
                         </Component>
                         <Component Id='AssocWebp' Guid='*'>
-                            <RegistryValue Root='HKMU' Key='Software\Classes\.webp\OpenWithProgids' Name='Rivett.Image' Type='string' Value='' KeyPath='yes' />
+                            <RegistryValue Root='HKMU' Key='Software\Classes\.webp\OpenWithProgids' Name='Rivett.webp' Type='string' Value='' KeyPath='yes' />
+                        </Component>
+                        <Component Id='AssocBmp' Guid='*'>
+                            <RegistryValue Root='HKMU' Key='Software\Classes\.bmp\OpenWithProgids' Name='Rivett.bmp' Type='string' Value='' KeyPath='yes' />
+                        </Component>
+                        <Component Id='AssocGif' Guid='*'>
+                            <RegistryValue Root='HKMU' Key='Software\Classes\.gif\OpenWithProgids' Name='Rivett.gif' Type='string' Value='' KeyPath='yes' />
+                        </Component>
+                        <Component Id='AssocTiff' Guid='*'>
+                            <RegistryValue Root='HKMU' Key='Software\Classes\.tif\OpenWithProgids' Name='Rivett.tiff' Type='string' Value='' KeyPath='yes' />
+                            <RegistryValue Root='HKMU' Key='Software\Classes\.tiff\OpenWithProgids' Name='Rivett.tiff' Type='string' Value='' />
                         </Component>
                         <Component Id='AssocExr' Guid='*'>
-                            <RegistryValue Root='HKMU' Key='Software\Classes\.exr\OpenWithProgids' Name='Rivett.Image' Type='string' Value='' KeyPath='yes' />
+                            <RegistryValue Root='HKMU' Key='Software\Classes\.exr\OpenWithProgids' Name='Rivett.exr' Type='string' Value='' KeyPath='yes' />
                         </Component>
                         <Component Id='AssocSvg' Guid='*'>
-                            <RegistryValue Root='HKMU' Key='Software\Classes\.svg\OpenWithProgids' Name='Rivett.Image' Type='string' Value='' KeyPath='yes' />
+                            <RegistryValue Root='HKMU' Key='Software\Classes\.svg\OpenWithProgids' Name='Rivett.svg' Type='string' Value='' KeyPath='yes' />
+                        </Component>
+                        <Component Id='AssocCr2' Guid='*'>
+                            <RegistryValue Root='HKMU' Key='Software\Classes\.cr2\OpenWithProgids' Name='Rivett.cr2' Type='string' Value='' KeyPath='yes' />
                         </Component>
                         <Component Id='AssocCr3' Guid='*'>
-                            <RegistryValue Root='HKMU' Key='Software\Classes\.cr3\OpenWithProgids' Name='Rivett.Image' Type='string' Value='' KeyPath='yes' />
+                            <RegistryValue Root='HKMU' Key='Software\Classes\.cr3\OpenWithProgids' Name='Rivett.cr3' Type='string' Value='' KeyPath='yes' />
                         </Component>
                         <Component Id='AssocArw' Guid='*'>
-                            <RegistryValue Root='HKMU' Key='Software\Classes\.arw\OpenWithProgids' Name='Rivett.Image' Type='string' Value='' KeyPath='yes' />
+                            <RegistryValue Root='HKMU' Key='Software\Classes\.arw\OpenWithProgids' Name='Rivett.arw' Type='string' Value='' KeyPath='yes' />
+                        </Component>
+                        <Component Id='AssocNef' Guid='*'>
+                            <RegistryValue Root='HKMU' Key='Software\Classes\.nef\OpenWithProgids' Name='Rivett.nef' Type='string' Value='' KeyPath='yes' />
+                        </Component>
+                        <Component Id='AssocRaf' Guid='*'>
+                            <RegistryValue Root='HKMU' Key='Software\Classes\.raf\OpenWithProgids' Name='Rivett.raf' Type='string' Value='' KeyPath='yes' />
+                        </Component>
+                        <Component Id='AssocDng' Guid='*'>
+                            <RegistryValue Root='HKMU' Key='Software\Classes\.dng\OpenWithProgids' Name='Rivett.dng' Type='string' Value='' KeyPath='yes' />
                         </Component>
                     </Directory>
                 </Directory>
@@ -133,15 +167,39 @@
             Title='File Associations'
             Description='Register Rivett in the "Open With" menu. Expand to choose individual formats.'
             Level='1'>
-            <ComponentRef Id='RegistryProgId'/>
-
-            <Feature Id='AssocPngFeature' Title='PNG (.png)' Level='1'><ComponentRef Id='AssocPng'/></Feature>
-            <Feature Id='AssocJpgFeature' Title='JPEG (.jpg, .jpeg)' Level='1'><ComponentRef Id='AssocJpg'/></Feature>
-            <Feature Id='AssocWebpFeature' Title='WebP (.webp)' Level='1'><ComponentRef Id='AssocWebp'/></Feature>
-            <Feature Id='AssocExrFeature' Title='OpenEXR (.exr)' Level='1'><ComponentRef Id='AssocExr'/></Feature>
-            <Feature Id='AssocSvgFeature' Title='SVG (.svg)' Level='1'><ComponentRef Id='AssocSvg'/></Feature>
-            <Feature Id='AssocCr3Feature' Title='Canon RAW (.cr3)' Level='1'><ComponentRef Id='AssocCr3'/></Feature>
-            <Feature Id='AssocArwFeature' Title='Sony RAW (.arw)' Level='1'><ComponentRef Id='AssocArw'/></Feature>
+            <Feature Id='AssocPngFeature' Title='PNG (.png)' Level='1'>
+                <ComponentRef Id='ProgId_Png'/>
+                <ComponentRef Id='AssocPng'/>
+            </Feature>
+            <Feature Id='AssocJpgFeature' Title='JPEG (.jpg, .jpeg)' Level='1'>
+                <ComponentRef Id='ProgId_Jpg'/>
+                <ComponentRef Id='AssocJpg'/>
+            </Feature>
+            <Feature Id='AssocWebpFeature' Title='WebP (.webp)' Level='1'>
+                <ComponentRef Id='ProgId_Webp'/>
+                <ComponentRef Id='AssocWebp'/>
+            </Feature>
+            <Feature Id='AssocStandardFeature' Title='Standard (BMP, GIF, TIFF)' Level='1'>
+                <ComponentRef Id='ProgId_Bmp'/><ComponentRef Id='AssocBmp'/>
+                <ComponentRef Id='ProgId_Gif'/><ComponentRef Id='AssocGif'/>
+                <ComponentRef Id='ProgId_Tiff'/><ComponentRef Id='AssocTiff'/>
+            </Feature>
+            <Feature Id='AssocExrFeature' Title='OpenEXR (.exr)' Level='1'>
+                <ComponentRef Id='ProgId_Exr'/>
+                <ComponentRef Id='AssocExr'/>
+            </Feature>
+            <Feature Id='AssocSvgFeature' Title='SVG (.svg)' Level='1'>
+                <ComponentRef Id='ProgId_Svg'/>
+                <ComponentRef Id='AssocSvg'/>
+            </Feature>
+            <Feature Id='AssocRawFeature' Title='Camera RAW' Level='1'>
+                <ComponentRef Id='ProgId_Cr2'/><ComponentRef Id='AssocCr2'/>
+                <ComponentRef Id='ProgId_Cr3'/><ComponentRef Id='AssocCr3'/>
+                <ComponentRef Id='ProgId_Arw'/><ComponentRef Id='AssocArw'/>
+                <ComponentRef Id='ProgId_Nef'/><ComponentRef Id='AssocNef'/>
+                <ComponentRef Id='ProgId_Raf'/><ComponentRef Id='AssocRaf'/>
+                <ComponentRef Id='ProgId_Dng'/><ComponentRef Id='AssocDng'/>
+            </Feature>
         </Feature>
 
         <Feature Id='Environment' Title='Add to PATH' Description='Add Rivett to your system PATH.' Level='2' Absent='allow'>
