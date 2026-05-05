@@ -3,6 +3,7 @@
 use eframe::CreationContext;
 use egui::{CentralPanel, Context, Key, Vec2};
 use std::time::{Duration, Instant};
+use chrono::{DateTime, Local};
 
 use crate::db::{Database, ImageRecord};
 use std::path::Path;

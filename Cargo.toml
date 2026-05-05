@@ -1,6 +1,6 @@
 [package]
 name        = "rivett"
-version = "0.2.3-9c9ee19"
+version = "0.2.3-rc.4"
 authors     = ["Rivett Developers <dev@rivett.com>"]
 edition     = "2021"
 description = "Rust Image Vetting Tool — fast, keyboard-driven image viewer"
@@ -10,7 +10,7 @@ license     = "MIT"
 name = "Rivett"
 identifier = "com.rivett.rivett"
 icon = ["resources/icon.png"]
-version = "0.2.3-9c9ee19"
+version = "0.2.3-rc.4"
 resources = []
 copyright = "Copyright © 2026 Rivett Developers. All rights reserved."
 category = "Graphics and Design"
@@ -67,6 +67,7 @@ exif        = { package = "kamadak-exif", version = "0.6" }
 drag        = "2"     # file drag-out to other applications
 raw-window-handle = "0.6"  # explicit dep for drag-out window handle construction
 img-parts   = "0.3"   # JPEG/PNG segment manipulation for lossless EXIF orientation writes
+chrono      = "0.4"
 
 # ---------------------------------------------------------------------------
 # Dev / test dependencies
