@@ -3,6 +3,8 @@
 use eframe::CreationContext;
 use egui::{CentralPanel, Context, Key, Vec2};
 use std::time::{Duration, Instant};
+
+#[cfg(target_os = "windows")]
 use chrono::{DateTime, Local};
 
 use crate::db::{Database, ImageRecord};
@@ -347,6 +349,7 @@ impl RivettApp {
 
     // ── Drag-out ──────────────────────────────────────────────────────────
 
+    #[cfg(target_os = "windows")]
     fn execute_drag_out(&mut self) {
         let Some(path) = self.current_path.clone() else { return };
         let win = OwnedWindowHandle(1);
@@ -381,6 +384,12 @@ impl RivettApp {
             |_result, _pos| {},
             drag::Options::default(),
         );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn execute_drag_out(&mut self) {
+        // Drag-out is currently only implemented for Windows due to 
+        // library compatibility with egui on Linux.
     }
 
     // ── Save rotation (Ctrl+S) ────────────────────────────────────────────
@@ -662,6 +671,7 @@ impl RivettApp {
                         }
 
                         if let Ok(meta) = path.metadata() {
+                            #[cfg(target_os = "windows")]
                             if let Ok(modified) = meta.modified() {
                                 let datetime: chrono::DateTime<chrono::Local> = modified.into();
                                 label_kv(ui, "Date", datetime.format("%Y-%m-%d %H:%M:%S").to_string());
@@ -1504,8 +1514,10 @@ impl DeleteConfirm {
 
 /// Wraps a raw Win32 HWND (as isize) so it can be passed to the `drag` crate
 /// across thread boundaries. The HWND is valid for the lifetime of the app window.
+#[cfg(target_os = "windows")]
 struct OwnedWindowHandle(isize);
 
+#[cfg(target_os = "windows")]
 impl raw_window_handle::HasWindowHandle for OwnedWindowHandle {
     fn window_handle(&self) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
         let hwnd = std::num::NonZeroIsize::new(self.0)
@@ -1520,6 +1532,7 @@ impl raw_window_handle::HasWindowHandle for OwnedWindowHandle {
     }
 }
 
+#[cfg(target_os = "windows")]
 impl raw_window_handle::HasDisplayHandle for OwnedWindowHandle {
     fn display_handle(&self) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
         unsafe {
