@@ -5,4 +5,5 @@ pub mod settings;
 pub mod session;
 pub mod db;
 pub mod viewer;
+pub mod renderer;
 pub mod app;

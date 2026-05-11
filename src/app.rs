@@ -15,6 +15,9 @@ use crate::formats::SupportedFormat;
 use crate::session::{SessionState, Rotation, RatingFilter, RatingFilterOp};
 use crate::settings::AppSettings;
 use crate::viewer::ViewerState;
+use crate::renderer::GammaRenderer;
+use std::sync::{Arc, Mutex};
+use egui_glow::glow;
 
 // ---------------------------------------------------------------------------
 // RivettApp
@@ -26,6 +29,8 @@ pub struct RivettApp {
     image_cache:     ImageCache,
     listing:         Option<DirectoryListing>,
     session:         SessionState,
+
+    gamma_renderer:  Option<Arc<Mutex<GammaRenderer>>>,
 
     // UI state
     current_path:    Option<std::path::PathBuf>,
@@ -63,6 +68,10 @@ impl RivettApp {
             log::error!("failed to open database at {}: {e}", db_path.display());
             e
         }).ok();
+
+        if let Some(gl) = &cc.gl {
+            cc.egui_ctx.memory_mut(|mem| mem.data.insert_temp(egui::Id::new("gl_context"), gl.clone()));
+        }
 
         let mut app = Self {
             db,
@@ -797,9 +806,9 @@ impl RivettApp {
 
     fn apply_global_filter(&mut self, filter: RatingFilter, ctx: &Context) {
         let Some(ref db) = self.db else { return };
-        self.session.rating_filter = Some(filter);
-        match DirectoryListing::scan_global(db, filter) {
+        match DirectoryListing::scan_global(db, &filter) {
             Ok(listing) => {
+                self.session.rating_filter = Some(filter);
                 self.listing = Some(listing);
                 self.load_current(ctx, false);
             }
@@ -863,6 +872,7 @@ impl RivettApp {
                         let filter = RatingFilter {
                             op:    RatingFilterOp::AtLeast,
                             value: r,
+                            path_prefix: None,
                         };
                         if ui.button(format!("At least ★ {r}")).clicked() {
                             self.apply_local_filter(Some(filter), ctx);
@@ -873,11 +883,27 @@ impl RivettApp {
 
                 let has_db = self.db.is_some();
                 ui.add_enabled_ui(has_db, |ui| {
+                    ui.menu_button("Current folder & subfolders", |ui| {
+                        for r in 1..=5 {
+                            let prefix = self.listing.as_ref().map(|l| l.dir_path.clone());
+                            let filter = RatingFilter {
+                                op:    RatingFilterOp::AtLeast,
+                                value: r,
+                                path_prefix: prefix,
+                            };
+                            if ui.button(format!("At least ★ {r}")).clicked() {
+                                self.apply_global_filter(filter, ctx);
+                                ui.close_menu();
+                            }
+                        }
+                    });
+
                     ui.menu_button("Library", |ui| {
                         for r in 1..=5 {
                             let filter = RatingFilter {
                                 op:    RatingFilterOp::AtLeast,
                                 value: r,
+                                path_prefix: None,
                             };
                             if ui.button(format!("At least ★ {r}")).clicked() {
                                 self.apply_global_filter(filter, ctx);
@@ -1386,13 +1412,57 @@ impl eframe::App for RivettApp {
             self.draw_context_menu(&response, ctx);
 
             let painter = ui.painter();
-            if let Some(ref texture) = self.viewer.texture {
+            if self.viewer.texture.is_some() {
                 let rect = self.viewer.image_rect(canvas);
-                painter.image(
-                    texture.id(), rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
+                let gamma = self.viewer.gamma;
+                let screen_size = ctx.screen_rect().size();
+
+                // 1. Handle texture upload if needed
+                if self.viewer.needs_texture_upload {
+                    if let Some(f32_data) = self.viewer.f32_data.take() {
+                        let renderer = self.gamma_renderer.get_or_insert_with(|| {
+                            let gl = cc_gl_from_ctx(ctx).expect("Glow context not found");
+                            Arc::new(Mutex::new(GammaRenderer::new(&gl)))
+                        }).clone();
+                        
+                        let needs_upload = self.viewer.needs_texture_upload;
+                        let (w, h) = (self.viewer.image_size.x as u32, self.viewer.image_size.y as u32);
+                        
+                        // We use a callback to upload because we need the 'glow' context
+                        let upload_renderer = renderer.clone();
+                        painter.add(egui::PaintCallback {
+                            rect,
+                            callback: Arc::new(egui_glow::CallbackFn::new(move |_info, painter| {
+                                let mut renderer = upload_renderer.lock().unwrap();
+                                if needs_upload {
+                                    renderer.update_texture(painter.gl(), w, h, &f32_data);
+                                }
+                            })),
+                        });
+                        self.viewer.needs_texture_upload = false;
+                    }
+                }
+
+                // 2. Render with gamma shader
+                if let Some(renderer) = &self.gamma_renderer {
+                    let renderer = renderer.clone();
+                    painter.add(egui::PaintCallback {
+                        rect,
+                        callback: Arc::new(egui_glow::CallbackFn::new(move |_info, painter| {
+                            let renderer = renderer.lock().unwrap();
+                            renderer.paint(painter.gl(), rect, screen_size, gamma);
+                        })),
+                    });
+                } else {
+                    // Fallback to standard egui image if renderer is not initialized
+                    if let Some(ref texture) = self.viewer.texture {
+                        painter.image(
+                            texture.id(), rect,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+                    }
+                }
             } else if let Some(ref err) = self.viewer.load_error {
                 painter.text(
                     canvas.center(), egui::Align2::CENTER_CENTER,
@@ -1469,6 +1539,10 @@ impl eframe::App for RivettApp {
             self.toast = None;
         }
     }
+}
+
+fn cc_gl_from_ctx(ctx: &Context) -> Option<Arc<glow::Context>> {
+    ctx.memory(|mem| mem.data.get_temp::<Arc<glow::Context>>(egui::Id::new("gl_context")))
 }
 
 // ---------------------------------------------------------------------------

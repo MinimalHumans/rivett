@@ -35,6 +35,8 @@ eframe = { version = "0.28", default-features = false, features = [
     "glow",
 ] }
 egui = "0.28"
+egui_glow = "0.28"
+glow = "0.13"
 
 # Image decoding (v1 formats only; keep default-features off for faster builds)
 image = { version = "0.25", default-features = false, features = [
@@ -68,6 +70,7 @@ drag        = "2"     # file drag-out to other applications
 raw-window-handle = "0.6"  # explicit dep for drag-out window handle construction
 img-parts   = "0.3"   # JPEG/PNG segment manipulation for lossless EXIF orientation writes
 chrono      = "0.4"
+bytemuck    = { version = "1", features = ["derive"] }
 
 # ---------------------------------------------------------------------------
 # Dev / test dependencies

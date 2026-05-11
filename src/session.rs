@@ -114,15 +114,22 @@ pub enum RatingFilterOp {
 }
 
 /// A rating predicate used to filter the directory listing for this session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RatingFilter {
-    pub op:    RatingFilterOp,
-    pub value: u8,
+    pub op:          RatingFilterOp,
+    pub value:       u8,
+    pub path_prefix: Option<PathBuf>,
 }
 
 impl RatingFilter {
     /// Returns `true` if `rating` satisfies this predicate.
-    pub fn matches(self, rating: Option<u8>) -> bool {
+    pub fn matches(&self, path: &Path, rating: Option<u8>) -> bool {
+        if let Some(prefix) = &self.path_prefix {
+            if !path.starts_with(prefix) {
+                return false;
+            }
+        }
+
         match rating {
             None    => false,
             Some(r) => match self.op {
@@ -316,7 +323,7 @@ mod tests {
         let mut s = SessionState::new(SortOrder::Name);
         s.rotate_cw(p("/img.jpg"));
         s.ignore_image(p("/other.jpg"));
-        s.rating_filter = Some(RatingFilter { op: RatingFilterOp::AtLeast, value: 3 });
+        s.rating_filter = Some(RatingFilter { op: RatingFilterOp::AtLeast, value: 3, path_prefix: None });
         s.flush();
         assert!(!s.has_pending_changes());
         assert!(s.ignored_images.is_empty());
@@ -327,29 +334,43 @@ mod tests {
 
     #[test]
     fn filter_at_least() {
-        let f = RatingFilter { op: RatingFilterOp::AtLeast, value: 3 };
-        assert!(!f.matches(None));
-        assert!(!f.matches(Some(2)));
-        assert!( f.matches(Some(3)));
-        assert!( f.matches(Some(5)));
+        let f = RatingFilter { op: RatingFilterOp::AtLeast, value: 3, path_prefix: None };
+        let path = PathBuf::from("dummy.jpg");
+        assert!(!f.matches(&path, None));
+        assert!(!f.matches(&path, Some(2)));
+        assert!( f.matches(&path, Some(3)));
+        assert!( f.matches(&path, Some(5)));
     }
 
     #[test]
     fn filter_at_most() {
-        let f = RatingFilter { op: RatingFilterOp::AtMost, value: 3 };
-        assert!( f.matches(Some(1)));
-        assert!( f.matches(Some(3)));
-        assert!(!f.matches(Some(4)));
-        assert!(!f.matches(None));
+        let f = RatingFilter { op: RatingFilterOp::AtMost, value: 3, path_prefix: None };
+        let path = PathBuf::from("dummy.jpg");
+        assert!( f.matches(&path, Some(1)));
+        assert!( f.matches(&path, Some(3)));
+        assert!(!f.matches(&path, Some(4)));
+        assert!(!f.matches(&path, None));
     }
 
     #[test]
     fn filter_exactly() {
-        let f = RatingFilter { op: RatingFilterOp::Exactly, value: 3 };
-        assert!(!f.matches(Some(2)));
-        assert!( f.matches(Some(3)));
-        assert!(!f.matches(Some(4)));
-        assert!(!f.matches(None));
+        let f = RatingFilter { op: RatingFilterOp::Exactly, value: 3, path_prefix: None };
+        let path = PathBuf::from("dummy.jpg");
+        assert!(!f.matches(&path, Some(2)));
+        assert!( f.matches(&path, Some(3)));
+        assert!(!f.matches(&path, Some(4)));
+        assert!(!f.matches(&path, None));
+    }
+
+    #[test]
+    fn filter_with_path_prefix() {
+        let prefix = PathBuf::from("/foo/bar");
+        let f = RatingFilter { op: RatingFilterOp::AtLeast, value: 3, path_prefix: Some(prefix) };
+        
+        assert!( f.matches(&PathBuf::from("/foo/bar/img.jpg"), Some(3)));
+        assert!( f.matches(&PathBuf::from("/foo/bar/baz/img.jpg"), Some(3)));
+        assert!(!f.matches(&PathBuf::from("/foo/img.jpg"), Some(3)));
+        assert!(!f.matches(&PathBuf::from("/other/img.jpg"), Some(3)));
     }
 
     // ── CropRect ─────────────────────────────────────────────────────────

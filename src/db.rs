@@ -319,27 +319,45 @@ impl Database {
     }
 
     /// All rated images matching a specific filter.
-    pub fn get_rated_filtered(&self, filter: crate::session::RatingFilter) -> Result<Vec<(std::path::PathBuf, ImageRecord)>> {
+    pub fn get_rated_filtered(&self, filter: &crate::session::RatingFilter) -> Result<Vec<(std::path::PathBuf, ImageRecord)>> {
         let op_sql = match filter.op {
             crate::session::RatingFilterOp::AtLeast => ">=",
             crate::session::RatingFilterOp::AtMost  => "<=",
             crate::session::RatingFilterOp::Exactly => "=",
         };
-        let query = format!(
+
+        let mut query = format!(
             "SELECT d.path,
                     i.id, i.directory_id, i.filename, i.file_size,
                     i.file_modified_at, i.rating, i.bookmarked, i.rotation, i.note,
                     i.created_at, i.updated_at
              FROM images i JOIN directories d ON i.directory_id = d.id
-             WHERE i.rating {} ?1
-             ORDER BY i.rating DESC, i.updated_at DESC",
+             WHERE i.rating {} ?1",
             op_sql
         );
+
+        if filter.path_prefix.is_some() {
+            query.push_str(" AND d.path LIKE ?2");
+        }
+
+        query.push_str(" ORDER BY i.rating DESC, i.updated_at DESC");
+
         let mut stmt = self.conn.prepare(&query)?;
-        let result: Result<Vec<_>> = stmt.query_map([filter.value], |row| {
-            let dir: String = row.get(0)?;
-            Ok((std::path::PathBuf::from(dir), map_image_row(row, 1)?))
-        })?.collect();
+        
+        let result: Result<Vec<_>> = if let Some(prefix) = &filter.path_prefix {
+            let prefix_str = prefix.to_string_lossy().to_string();
+            let like_pattern = format!("{}%", prefix_str);
+            stmt.query_map(rusqlite::params![filter.value, like_pattern], |row| {
+                let dir: String = row.get(0)?;
+                Ok((std::path::PathBuf::from(dir), map_image_row(row, 1)?))
+            })?.collect()
+        } else {
+            stmt.query_map(rusqlite::params![filter.value], |row| {
+                let dir: String = row.get(0)?;
+                Ok((std::path::PathBuf::from(dir), map_image_row(row, 1)?))
+            })?.collect()
+        };
+
         result
     }
 

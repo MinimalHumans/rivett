@@ -50,7 +50,7 @@ impl DirectoryListing {
                     files.retain(|p| {
                         let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
                         if let Ok(Some(img_rec)) = db.get_image(d_rec.id, fname) {
-                            f.matches(img_rec.rating)
+                            f.matches(p, img_rec.rating)
                         } else {
                             false
                         }
@@ -78,7 +78,18 @@ impl DirectoryListing {
         db:    Option<&crate::db::Database>,
     ) -> std::io::Result<()> {
         let current_file = self.current().cloned();
-        let fresh = Self::scan(&self.dir_path, order, self.rating_filter, db)?;
+
+        let fresh = if self.dir_path.as_os_str().is_empty() {
+            // Global/Recursive view
+            if let (Some(db), Some(filter)) = (db, &self.rating_filter) {
+                Self::scan_global(db, filter)?
+            } else {
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, "Cannot refresh global view without DB or filter"));
+            }
+        } else {
+            Self::scan(&self.dir_path, order, self.rating_filter.clone(), db)?
+        };
+
         *self = fresh;
         if let Some(path) = current_file {
             self.seek_to(&path);
@@ -104,7 +115,7 @@ impl DirectoryListing {
     /// Create a listing of all rated images across the library that match `filter`.
     pub fn scan_global(
         db:     &crate::db::Database,
-        filter: crate::session::RatingFilter,
+        filter: &crate::session::RatingFilter,
     ) -> std::io::Result<Self> {
         let records = db.get_rated_filtered(filter)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
@@ -124,7 +135,7 @@ impl DirectoryListing {
             dir_path: PathBuf::new(), // Special empty path for global view
             files,
             current_index: 0,
-            rating_filter: Some(filter),
+            rating_filter: Some(filter.clone()),
         })
     }
 
@@ -204,26 +215,26 @@ pub struct Histograms {
 /// A fully decoded RGBA image ready for upload to the GPU.
 #[derive(Clone)]
 pub struct DecodedImage {
-    pub rgba:       Vec<u8>,
+    pub rgba:       Vec<f32>,
     pub width:      u32,
     pub height:     u32,
     pub histograms: Histograms,
 }
 
 impl DecodedImage {
-    pub fn new(rgba: Vec<u8>, width: u32, height: u32) -> Self {
+    pub fn new(rgba: Vec<f32>, width: u32, height: u32) -> Self {
         let mut hist_r = vec![0u32; 256];
         let mut hist_g = vec![0u32; 256];
         let mut hist_b = vec![0u32; 256];
 
         for chunk in rgba.chunks_exact(4) {
-            let r = chunk[0] as usize;
-            let g = chunk[1] as usize;
-            let b = chunk[2] as usize;
+            let r = (chunk[0].clamp(0.0, 1.0) * 255.0) as usize;
+            let g = (chunk[1].clamp(0.0, 1.0) * 255.0) as usize;
+            let b = (chunk[2].clamp(0.0, 1.0) * 255.0) as usize;
 
-            hist_r[r] += 1;
-            hist_g[g] += 1;
-            hist_b[b] += 1;
+            hist_r[r.min(255)] += 1;
+            hist_g[g.min(255)] += 1;
+            hist_b[b.min(255)] += 1;
         }
         
         // Normalize histograms
@@ -240,6 +251,11 @@ impl DecodedImage {
         };
 
         Self { rgba, width, height, histograms }
+    }
+
+    pub fn new_from_u8(rgba: Vec<u8>, width: u32, height: u32) -> Self {
+        let f32_rgba = rgba.into_iter().map(|v| v as f32 / 255.0).collect();
+        Self::new(f32_rgba, width, height)
     }
 }
 
@@ -274,9 +290,15 @@ pub fn load_image(path: &Path) -> Result<DecodedImage, String> {
             if let Some(orientation) = crate::metadata::get_orientation(path) {
                 img = apply_orientation_to_image(img, orientation);
             }
-            let rgba = img.to_rgba8();
-            let (width, height) = rgba.dimensions();
-            Ok(DecodedImage::new(rgba.into_raw(), width, height))
+            if let Some(SupportedFormat::Exr) = fmt {
+                let rgba = img.to_rgba32f();
+                let (width, height) = rgba.dimensions();
+                Ok(DecodedImage::new(rgba.into_raw(), width, height))
+            } else {
+                let rgba = img.to_rgba8();
+                let (width, height) = rgba.dimensions();
+                Ok(DecodedImage::new_from_u8(rgba.into_raw(), width, height))
+            }
         }
         Err(e) => {
             // Fallback for TIFFs or other formats that might have embedded JPEGs
@@ -315,20 +337,35 @@ fn load_raw(path: &Path) -> Result<DecodedImage, String> {
                     let mut rgba = Vec::with_capacity(width * height * 4);
                     if data.len() >= width * height * 3 {
                         for chunk in data.chunks_exact(3) {
-                            rgba.push((chunk[0] >> 8) as u8);
-                            rgba.push((chunk[1] >> 8) as u8);
-                            rgba.push((chunk[2] >> 8) as u8);
-                            rgba.push(255);
+                            rgba.push(chunk[0] as f32 / 65535.0);
+                            rgba.push(chunk[1] as f32 / 65535.0);
+                            rgba.push(chunk[2] as f32 / 65535.0);
+                            rgba.push(1.0);
                         }
-                        let mut img = image::DynamicImage::ImageRgba8(
-                            image::ImageBuffer::from_raw(width as u32, height as u32, rgba).unwrap()
-                        );
+                        // Note: rawloader Integer data is typically 16-bit.
+                        // We still use apply_orientation_to_image via a temporary DynamicImage
+                        // if needed, but for now we'll just handle rotation in ViewerState if possible.
+                        // Actually, let's keep the existing rotation logic by converting to f32 after rotation
+                        // or rotating f32.
+                        
+                        // For simplicity, let's rotate the data if needed.
+                        let mut final_rgba = rgba;
+                        let mut final_w = width as u32;
+                        let mut final_h = height as u32;
+
                         if let Some(orientation) = crate::metadata::get_orientation(path) {
-                            img = apply_orientation_to_image(img, orientation);
+                            // Temporary conversion to ImageBuffer<Rgba<f32>> to use image crate rotation
+                            if let Some(buffer) = image::ImageBuffer::<image::Rgba<f32>, Vec<f32>>::from_raw(final_w, final_h, final_rgba) {
+                                let mut dynamic_f32 = image::DynamicImage::ImageRgba32F(buffer);
+                                dynamic_f32 = apply_orientation_to_image(dynamic_f32, orientation);
+                                let rotated_rgba = dynamic_f32.to_rgba32f();
+                                final_w = rotated_rgba.width();
+                                final_h = rotated_rgba.height();
+                                final_rgba = rotated_rgba.into_raw();
+                            }
                         }
-                        let rgba = img.to_rgba8();
-                        let (width, height) = rgba.dimensions();
-                        return Ok(DecodedImage::new(rgba.into_raw(), width, height));
+
+                        return Ok(DecodedImage::new(final_rgba, final_w, final_h));
                     }
                     Err("Raw sensor data requires debayering (not yet implemented)".to_string())
                 }
@@ -349,7 +386,7 @@ fn load_raw(path: &Path) -> Result<DecodedImage, String> {
                 }
                 let rgba = img.to_rgba8();
                 let (w, h) = rgba.dimensions();
-                return Ok(DecodedImage::new(rgba.into_raw(), w, h));
+                return Ok(DecodedImage::new_from_u8(rgba.into_raw(), w, h));
             }
 
             // Fallback 2: Parse TIFF/DNG IFDs manually and extract JPEG tiles.
@@ -407,7 +444,7 @@ fn load_any_embedded_jpeg(path: &Path) -> Result<DecodedImage, String> {
 
         let rgba = img.to_rgba8();
         let (width, height) = rgba.dimensions();
-        Ok(DecodedImage::new(rgba.into_raw(), width, height))
+        Ok(DecodedImage::new_from_u8(rgba.into_raw(), width, height))
     } else {
         Err("Could not find any embedded JPEG preview in file".to_string())
     }
@@ -441,7 +478,7 @@ fn load_svg(path: &Path) -> Result<DecodedImage, String> {
     
     resvg::render(&tree, resvg::tiny_skia::Transform::default(), &mut pixmap.as_mut());
     
-    Ok(DecodedImage::new(pixmap.take(), pixmap_size.width(), pixmap_size.height()))
+    Ok(DecodedImage::new_from_u8(pixmap.take(), pixmap_size.width(), pixmap_size.height()))
 }
 
 /// Simple LRU cache for decoded images.
@@ -761,7 +798,7 @@ fn load_dng_jpeg_tiles(path: &Path) -> Result<DecodedImage, String> {
             }
             let rgba = img.to_rgba8();
             let (w, h) = rgba.dimensions();
-            return Ok(DecodedImage::new(rgba.into_raw(), w, h));
+            return Ok(DecodedImage::new_from_u8(rgba.into_raw(), w, h));
         }
     }
 
