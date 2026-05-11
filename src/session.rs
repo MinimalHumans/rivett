@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use serde::{Serialize, Deserialize};
 
 use crate::settings::SortOrder;
 
@@ -106,7 +107,7 @@ impl CropRect {
 // ---------------------------------------------------------------------------
 
 /// Comparison operator for a rating predicate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RatingFilterOp {
     AtLeast,
     AtMost,
@@ -114,7 +115,7 @@ pub enum RatingFilterOp {
 }
 
 /// A rating predicate used to filter the directory listing for this session.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RatingFilter {
     pub op:          RatingFilterOp,
     pub value:       u8,
@@ -142,6 +143,30 @@ impl RatingFilter {
 }
 
 // ---------------------------------------------------------------------------
+// Image Adjustments
+// ---------------------------------------------------------------------------
+
+/// Per-image viewing adjustments (exposure, gamma, remap).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ImageAdjustments {
+    pub exposure:  f32,
+    pub gamma:     f32,
+    pub remap_min: f32,
+    pub remap_max: f32,
+}
+
+impl Default for ImageAdjustments {
+    fn default() -> Self {
+        Self {
+            exposure:  0.0,
+            gamma:     1.0,
+            remap_min: 0.0,
+            remap_max: 1.0,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SessionState
 // ---------------------------------------------------------------------------
 
@@ -154,6 +179,8 @@ pub struct SessionState {
     pub ignored_images:    HashSet<PathBuf>,
     pub rating_filter:     Option<RatingFilter>,
     pub sort_order:        SortOrder,
+    /// Per-image adjustments (exposure, gamma, remap)
+    pub adjustments:       HashMap<PathBuf, ImageAdjustments>,
 }
 
 impl SessionState {
@@ -162,6 +189,14 @@ impl SessionState {
             sort_order: default_sort,
             ..Default::default()
         }
+    }
+
+    pub fn adjustments_for(&self, path: &PathBuf) -> ImageAdjustments {
+        self.adjustments.get(path).copied().unwrap_or_default()
+    }
+
+    pub fn set_adjustments(&mut self, path: PathBuf, adj: ImageAdjustments) {
+        self.adjustments.insert(path, adj);
     }
 
     // ── Pending-change tracking ───────────────────────────────────────────

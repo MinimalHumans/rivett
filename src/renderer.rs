@@ -116,14 +116,23 @@ impl GammaRenderer {
         }
     }
 
-    pub fn paint(&self, gl: &glow::Context, image_rect: egui::Rect, canvas_rect: egui::Rect, gamma: f32) {
+    pub fn paint(&self, gl: &glow::Context, image_rect: egui::Rect, canvas_rect: egui::Rect, adj: crate::session::ImageAdjustments) {
         unsafe {
             let Some(tex) = self.texture else { return };
 
             gl.use_program(Some(self.program));
 
             let gamma_loc = gl.get_uniform_location(self.program, "u_gamma");
-            gl.uniform_1_f32(gamma_loc.as_ref(), gamma);
+            gl.uniform_1_f32(gamma_loc.as_ref(), adj.gamma);
+
+            let expo_loc = gl.get_uniform_location(self.program, "u_exposure");
+            gl.uniform_1_f32(expo_loc.as_ref(), adj.exposure);
+
+            let rmin_loc = gl.get_uniform_location(self.program, "u_remap_min");
+            gl.uniform_1_f32(rmin_loc.as_ref(), adj.remap_min);
+
+            let rmax_loc = gl.get_uniform_location(self.program, "u_remap_max");
+            gl.uniform_1_f32(rmax_loc.as_ref(), adj.remap_max);
 
             let img_loc = gl.get_uniform_location(self.program, "u_image_rect");
             gl.uniform_4_f32(img_loc.as_ref(), image_rect.min.x, image_rect.min.y, image_rect.max.x, image_rect.max.y);

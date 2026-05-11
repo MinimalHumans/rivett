@@ -150,14 +150,15 @@ impl RivettApp {
         self.refresh_record();
 
         let rotation = self.session.rotation_for(&path);
+        let adjustments = self.session.adjustments_for(&path);
 
         if let Some(img) = self.image_cache.get(&path) {
-            self.viewer.load_image(ctx, img, rotation, preserve_zoom);
+            self.viewer.load_image(ctx, img, rotation, adjustments, preserve_zoom);
         } else {
             match load_image(&path) {
                 Ok(img) => {
                     self.image_cache.insert(path.clone(), img.clone());
-                    self.viewer.load_image(ctx, &img, rotation, preserve_zoom);
+                    self.viewer.load_image(ctx, &img, rotation, adjustments, preserve_zoom);
                 }
                 Err(e)  => {
                     log::warn!("{e}");
@@ -714,42 +715,179 @@ impl RivettApp {
 
                         ui.separator();
                         ui.heading("Viewing Adjustment");
-                        let mut g = self.viewer.gamma;
+
+                        let mut adj = self.session.adjustments_for(&path);
+                        let mut changed = false;
+
+                        // 1. Exposure
                         ui.horizontal(|ui| {
-                            ui.label("Gamma:");
-                            if ui.add(egui::Slider::new(&mut g, 0.1..=4.0)).changed() {
-                                self.viewer.set_gamma(g, ctx);
+                            ui.label("Exposure:");
+                            let old_expo = adj.exposure;
+                            let mut speed = 0.05;
+                            if ui.input(|i| i.modifiers.shift) { speed = 0.5; }
+                            
+                            let res = ui.add(egui::DragValue::new(&mut adj.exposure)
+                                .speed(speed)
+                                .suffix(" stops"));
+                            
+                            if res.changed() {
+                                if ui.input(|i| i.modifiers.shift) {
+                                    adj.exposure = (adj.exposure * 2.0).round() / 2.0;
+                                }
+                                changed = true;
                             }
-                            if ui.button("Reset").clicked() {
-                                self.viewer.set_gamma(1.0, ctx);
+                            if ui.add(egui::Slider::new(&mut adj.exposure, -4.0..=4.0).show_value(false)).changed() {
+                                if ui.input(|i| i.modifiers.shift) {
+                                    adj.exposure = (adj.exposure * 2.0).round() / 2.0;
+                                }
+                                changed = true;
                             }
                         });
+
+                        // 2. Gamma
+                        ui.horizontal(|ui| {
+                            ui.label("Gamma:   ");
+                            if ui.add(egui::DragValue::new(&mut adj.gamma).speed(0.01)).changed() {
+                                changed = true;
+                            }
+                            if ui.add(egui::Slider::new(&mut adj.gamma, 0.1..=4.0).show_value(false)).changed() {
+                                changed = true;
+                            }
+                        });
+
+                        if ui.button("Reset All").clicked() {
+                            adj = crate::session::ImageAdjustments::default();
+                            changed = true;
+                        }
+
+                        if changed {
+                            self.session.set_adjustments(path.clone(), adj);
+                            self.viewer.exposure = adj.exposure;
+                            self.viewer.gamma    = adj.gamma;
+                            self.viewer.remap_min = adj.remap_min;
+                            self.viewer.remap_max = adj.remap_max;
+                        }
 
                         if let Some(img) = self.image_cache.get(&path) {
                             ui.separator();
                             ui.heading("Histogram");
-                            let hist_height = 64.0;
-                            let (rect, _) = ui.allocate_at_least(egui::vec2(ui.available_width(), hist_height), egui::Sense::hover());
-                            let painter = ui.painter();
-                            painter.rect_filled(rect, 2.0, egui::Color32::from_gray(30));
                             
+                            let hist_height = 80.0;
+                            let (rect, response) = ui.allocate_at_least(egui::vec2(ui.available_width(), hist_height + 20.0), egui::Sense::drag());
+                            let hist_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), hist_height));
+                            
+                            let painter = ui.painter();
+                            painter.rect_filled(hist_rect, 2.0, egui::Color32::from_gray(30));
+
+                            // --- Clipping logic ---
+                            // We need to calculate clipping relative to CURRENT remap_min/max
+                            // Since we only have raw data (original clipping), we approximate 
+                            // for now or we'd need to re-scan. Let's use the raw counts for 0..1.
+                            
+                            let mut low_count = [0u32; 3];
+                            let mut high_count = [0u32; 3];
+                            
+                            // For a true VFX workflow, we'd re-scan the f32 buffer here if adj changed.
+                            // To keep UI smooth, we use the pre-calculated ones if remap is 0..1.
+                            if adj.remap_min == 0.0 && adj.remap_max == 1.0 {
+                                low_count = img.histograms.low_clips;
+                                high_count = img.histograms.high_clips;
+                            } else {
+                                // Dynamic clipping re-calculation (surgical)
+                                for chunk in img.rgba.chunks_exact(4) {
+                                    for i in 0..3 {
+                                        if chunk[i] < adj.remap_min { low_count[i] += 1; }
+                                        if chunk[i] > adj.remap_max { high_count[i] += 1; }
+                                    }
+                                }
+                            }
+
+                            let total = img.histograms.total_pixels as f32;
+                            let draw_clip_bar = |ui: &mut egui::Ui, side_rect: egui::Rect, counts: [u32; 3], label: &str| {
+                                let max_c = *counts.iter().max().unwrap_or(&0);
+                                if max_c > 0 {
+                                    let pct = (max_c as f32 / total * 100.0).max(0.1);
+                                    let color = if pct > 1.0 { egui::Color32::from_rgb(255, 50, 50) } else { egui::Color32::from_rgb(255, 200, 0) };
+                                    painter.rect_filled(side_rect, 0.0, color);
+                                    
+                                    ui.interact(side_rect, egui::Id::new(label), egui::Sense::hover()).on_hover_ui(|ui| {
+                                        ui.label(egui::RichText::new(format!("{} clipping", label)).strong());
+                                        ui.label(format!("  {} pixels total ({:.1}%)", max_c, max_c as f32 / total * 100.0));
+                                        let channels = ["red", "green", "blue"];
+                                        for i in 0..3 {
+                                            ui.label(format!("  {} {} ({:.1}%)", counts[i], channels[i], counts[i] as f32 / total * 100.0));
+                                        }
+                                    });
+                                }
+                            };
+
+                            let bar_w = 6.0;
+                            draw_clip_bar(ui, egui::Rect::from_min_max(hist_rect.left_top(), egui::pos2(hist_rect.left() + bar_w, hist_rect.bottom())), low_count, "Shadow");
+                            draw_clip_bar(ui, egui::Rect::from_min_max(egui::pos2(hist_rect.right() - bar_w, hist_rect.top()), hist_rect.right_bottom()), high_count, "Highlight");
+
+                            // --- Paint Channels ---
                             let paint_channel = |bins: &[f32], color: egui::Color32| {
                                 if bins.is_empty() { return; }
-                                let bin_width = rect.width() / bins.len() as f32;
+                                let bin_width = hist_rect.width() / bins.len() as f32;
                                 let mut points = Vec::with_capacity(bins.len() * 2);
                                 for (i, &val) in bins.iter().enumerate() {
-                                    let x = rect.min.x + i as f32 * bin_width;
+                                    let x = hist_rect.min.x + i as f32 * bin_width;
                                     let h = val * hist_height;
-                                    let y = rect.max.y - h;
+                                    let y = hist_rect.max.y - h;
                                     points.push(egui::pos2(x, y));
                                     points.push(egui::pos2(x + bin_width, y));
                                 }
                                 painter.add(egui::Shape::line(points, egui::Stroke::new(1.2, color)));
                             };
 
-                            paint_channel(&img.histograms.r, egui::Color32::from_rgb(255, 50, 50));
-                            paint_channel(&img.histograms.g, egui::Color32::from_rgb(50, 255, 50));
-                            paint_channel(&img.histograms.b, egui::Color32::from_rgb(50, 50, 255));
+                            paint_channel(&img.histograms.r, egui::Color32::from_rgba_unmultiplied(255, 50, 50, 180));
+                            paint_channel(&img.histograms.g, egui::Color32::from_rgba_unmultiplied(50, 255, 50, 180));
+                            paint_channel(&img.histograms.b, egui::Color32::from_rgba_unmultiplied(50, 50, 255, 180));
+
+                            // --- Handles ---
+                            let to_x = |val: f32| hist_rect.min.x + val.clamp(0.0, 1.0) * hist_rect.width();
+                            let from_x = |x: f32| (x - hist_rect.min.x) / hist_rect.width();
+
+                            let mut min_x = to_x(adj.remap_min);
+                            let mut max_x = to_x(adj.remap_max);
+
+                            let handle_w = 8.0;
+                            let draw_handle = |x: f32, id: &str| {
+                                let h_rect = egui::Rect::from_center_size(egui::pos2(x, hist_rect.bottom() + 8.0), egui::vec2(handle_w, 16.0));
+                                let res = ui.interact(h_rect, egui::Id::new(id), egui::Sense::drag());
+                                let color = if res.dragged() || res.hovered() { egui::Color32::WHITE } else { egui::Color32::from_gray(180) };
+                                painter.rect_filled(h_rect, 1.0, color);
+                                painter.line_segment([egui::pos2(x, hist_rect.top()), egui::pos2(x, hist_rect.bottom())], egui::Stroke::new(1.0, color.poly_multiply(0.5)));
+                                res
+                            };
+
+                            let res_min = draw_handle(min_x, "min_handle");
+                            let res_max = draw_handle(max_x, "max_handle");
+
+                            if res_min.dragged() {
+                                adj.remap_min = from_x(min_x + res_min.drag_delta().x);
+                                changed = true;
+                            }
+                            if res_max.dragged() {
+                                adj.remap_max = from_x(max_x + res_max.drag_delta().x);
+                                changed = true;
+                            }
+                            
+                            // Moving both
+                            if response.dragged() && !res_min.dragged() && !res_max.dragged() {
+                                let delta = from_x(hist_rect.min.x + response.drag_delta().x) - from_x(hist_rect.min.x);
+                                adj.remap_min += delta;
+                                adj.remap_max += delta;
+                                changed = true;
+                            }
+
+                            ui.add_space(10.0);
+                            ui.horizontal(|ui| {
+                                ui.label("Black:");
+                                if ui.add(egui::DragValue::new(&mut adj.remap_min).speed(0.005)).changed() { changed = true; }
+                                ui.label("White:");
+                                if ui.add(egui::DragValue::new(&mut adj.remap_max).speed(0.005)).changed() { changed = true; }
+                            });
                         }
 
                         ui.separator();
@@ -1422,8 +1560,6 @@ impl eframe::App for RivettApp {
             let painter = ui.painter();
             if self.viewer.texture.is_some() {
                 let rect = self.viewer.image_rect(canvas);
-                let gamma = self.viewer.gamma;
-                let screen_rect = ctx.screen_rect();
 
                 // 1. Handle texture upload if needed
                 if self.viewer.needs_texture_upload {
@@ -1454,11 +1590,17 @@ impl eframe::App for RivettApp {
                 // 2. Render with gamma shader
                 if let Some(renderer) = &self.gamma_renderer {
                     let renderer = renderer.clone();
+                    let adj = crate::session::ImageAdjustments {
+                        exposure:  self.viewer.exposure,
+                        gamma:     self.viewer.gamma,
+                        remap_min: self.viewer.remap_min,
+                        remap_max: self.viewer.remap_max,
+                    };
                     painter.add(egui::PaintCallback {
                         rect: canvas, // Cover the entire canvas to allow for zoom/pan clipping
                         callback: Arc::new(egui_glow::CallbackFn::new(move |_info, painter| {
                             let renderer = renderer.lock().unwrap();
-                            renderer.paint(painter.gl(), rect, canvas, gamma);
+                            renderer.paint(painter.gl(), rect, canvas, adj);
                         })),
                     });
                 } else {

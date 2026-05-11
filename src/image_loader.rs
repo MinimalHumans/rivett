@@ -205,11 +205,16 @@ use std::thread;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 /// Histograms for each color channel.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Histograms {
     pub r: Vec<f32>,
     pub g: Vec<f32>,
     pub b: Vec<f32>,
+
+    // Clipping counts for pixels < 0.0 and > 1.0 (relative to original data)
+    pub low_clips: [u32; 3],  // RGB
+    pub high_clips: [u32; 3], // RGB
+    pub total_pixels: usize,
 }
 
 /// A fully decoded RGBA image ready for upload to the GPU.
@@ -226,15 +231,24 @@ impl DecodedImage {
         let mut hist_r = vec![0u32; 256];
         let mut hist_g = vec![0u32; 256];
         let mut hist_b = vec![0u32; 256];
+        
+        let mut low_clips  = [0u32; 3];
+        let mut high_clips = [0u32; 3];
+        let total_pixels = (width * height) as usize;
 
         for chunk in rgba.chunks_exact(4) {
-            let r = (chunk[0].clamp(0.0, 1.0) * 255.0) as usize;
-            let g = (chunk[1].clamp(0.0, 1.0) * 255.0) as usize;
-            let b = (chunk[2].clamp(0.0, 1.0) * 255.0) as usize;
-
-            hist_r[r.min(255)] += 1;
-            hist_g[g.min(255)] += 1;
-            hist_b[b.min(255)] += 1;
+            for (i, &val) in chunk.iter().enumerate().take(3) {
+                if val < 0.0 { low_clips[i] += 1; }
+                if val > 1.0 { high_clips[i] += 1; }
+                
+                let bin = (val.clamp(0.0, 1.0) * 255.0) as usize;
+                match i {
+                    0 => hist_r[bin.min(255)] += 1,
+                    1 => hist_g[bin.min(255)] += 1,
+                    2 => hist_b[bin.min(255)] += 1,
+                    _ => {}
+                }
+            }
         }
         
         // Normalize histograms
@@ -242,12 +256,13 @@ impl DecodedImage {
         let max_g = (*hist_g.iter().max().unwrap_or(&1)).max(1) as f32;
         let max_b = (*hist_b.iter().max().unwrap_or(&1)).max(1) as f32;
 
-        // We can normalize each channel individually or by the global max.
-        // Usually, individual normalization is better for visibility of each channel.
         let histograms = Histograms {
             r: hist_r.into_iter().map(|v| v as f32 / max_r).collect(),
             g: hist_g.into_iter().map(|v| v as f32 / max_g).collect(),
             b: hist_b.into_iter().map(|v| v as f32 / max_b).collect(),
+            low_clips,
+            high_clips,
+            total_pixels,
         };
 
         Self { rgba, width, height, histograms }

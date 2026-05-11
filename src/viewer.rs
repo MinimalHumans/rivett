@@ -51,6 +51,12 @@ pub struct ViewerState {
     pub load_error: Option<String>,
     /// Viewing gamma (default 1.0).
     pub gamma: f32,
+    /// Exposure offset (default 0.0).
+    pub exposure: f32,
+    /// Remap min (black point, default 0.0).
+    pub remap_min: f32,
+    /// Remap max (white point, default 1.0).
+    pub remap_max: f32,
     
     /// Rotated f32 data for the custom shader.
     pub f32_data:  Option<Vec<f32>>,
@@ -76,6 +82,9 @@ impl Default for ViewerState {
             fullscreen:     false,
             load_error:     None,
             gamma:          1.0,
+            exposure:       0.0,
+            remap_min:      0.0,
+            remap_max:      1.0,
             f32_data:       None,
             needs_texture_upload: false,
             last_image:     None,
@@ -88,10 +97,14 @@ impl ViewerState {
     pub fn new() -> Self { Self::default() }
 
     /// Load a decoded image into egui.
-    pub fn load_image(&mut self, ctx: &Context, img: &DecodedImage, rotation: Rotation, preserve_zoom: bool) {
+    pub fn load_image(&mut self, ctx: &Context, img: &DecodedImage, rotation: Rotation, adjustments: crate::session::ImageAdjustments, preserve_zoom: bool) {
         self.load_error   = None;
         self.last_image   = Some(img.clone());
         self.last_rotation = rotation;
+        self.exposure     = adjustments.exposure;
+        self.gamma        = adjustments.gamma;
+        self.remap_min    = adjustments.remap_min;
+        self.remap_max    = adjustments.remap_max;
         
         self.refresh_texture(ctx);
 
@@ -140,6 +153,9 @@ impl ViewerState {
         self.pan        = Vec2::ZERO;
         self.last_image = None;
         self.gamma      = 1.0;
+        self.exposure   = 0.0;
+        self.remap_min  = 0.0;
+        self.remap_max  = 1.0;
         self.f32_data   = None;
         self.needs_texture_upload = false;
     }
