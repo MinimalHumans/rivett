@@ -46,7 +46,7 @@ impl DirectoryListing {
                 // Prune records for files that no longer exist
                 let _ = Self::prune_missing_images(db, d_rec.id, &files);
 
-                if let Some(f) = filter {
+                if let Some(ref f) = filter {
                     files.retain(|p| {
                         let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
                         if let Ok(Some(img_rec)) = db.get_image(d_rec.id, fname) {
@@ -257,6 +257,10 @@ impl DecodedImage {
         let f32_rgba = rgba.into_iter().map(|v| v as f32 / 255.0).collect();
         Self::new(f32_rgba, width, height)
     }
+
+    pub fn to_u8(&self) -> Vec<u8> {
+        self.rgba.iter().map(|&v| (v.clamp(0.0, 1.0) * 255.0) as u8).collect()
+    }
 }
 
 /// Decode `path` into a [`DecodedImage`].
@@ -355,7 +359,7 @@ fn load_raw(path: &Path) -> Result<DecodedImage, String> {
 
                         if let Some(orientation) = crate::metadata::get_orientation(path) {
                             // Temporary conversion to ImageBuffer<Rgba<f32>> to use image crate rotation
-                            if let Some(buffer) = image::ImageBuffer::<image::Rgba<f32>, Vec<f32>>::from_raw(final_w, final_h, final_rgba) {
+                            if let Some(buffer) = image::ImageBuffer::<image::Rgba<f32>, Vec<f32>>::from_raw(final_w, final_h, final_rgba.clone()) {
                                 let mut dynamic_f32 = image::DynamicImage::ImageRgba32F(buffer);
                                 dynamic_f32 = apply_orientation_to_image(dynamic_f32, orientation);
                                 let rotated_rgba = dynamic_f32.to_rgba32f();

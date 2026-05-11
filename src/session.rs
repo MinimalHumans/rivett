@@ -5,7 +5,7 @@
 //! prompt if [`SessionState::has_pending_changes`] is true.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::settings::SortOrder;
 

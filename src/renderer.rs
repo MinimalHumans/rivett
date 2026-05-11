@@ -52,7 +52,7 @@ impl GammaRenderer {
             gl.bind_vertex_array(Some(vertex_array));
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
             
-            // 0..1 quad
+            // a_pos: (x, y) coordinates for interpolation (0..1)
             let vertices: [f32; 8] = [
                 0.0, 0.0,
                 1.0, 0.0,
@@ -116,7 +116,7 @@ impl GammaRenderer {
         }
     }
 
-    pub fn paint(&self, gl: &glow::Context, rect: egui::Rect, screen_size: egui::Vec2, gamma: f32) {
+    pub fn paint(&self, gl: &glow::Context, image_rect: egui::Rect, canvas_rect: egui::Rect, gamma: f32) {
         unsafe {
             let Some(tex) = self.texture else { return };
 
@@ -125,11 +125,11 @@ impl GammaRenderer {
             let gamma_loc = gl.get_uniform_location(self.program, "u_gamma");
             gl.uniform_1_f32(gamma_loc.as_ref(), gamma);
 
-            let rect_loc = gl.get_uniform_location(self.program, "u_rect");
-            gl.uniform_4_f32(rect_loc.as_ref(), rect.min.x, rect.min.y, rect.max.x, rect.max.y);
+            let img_loc = gl.get_uniform_location(self.program, "u_image_rect");
+            gl.uniform_4_f32(img_loc.as_ref(), image_rect.min.x, image_rect.min.y, image_rect.max.x, image_rect.max.y);
 
-            let screen_loc = gl.get_uniform_location(self.program, "u_screen_size");
-            gl.uniform_2_f32(screen_loc.as_ref(), screen_size.x, screen_size.y);
+            let canvas_loc = gl.get_uniform_location(self.program, "u_canvas_rect");
+            gl.uniform_4_f32(canvas_loc.as_ref(), canvas_rect.min.x, canvas_rect.min.y, canvas_rect.max.x, canvas_rect.max.y);
 
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(tex));

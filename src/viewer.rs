@@ -190,7 +190,7 @@ impl ViewerState {
         }
         let ratio_x = canvas_size.x / self.image_size.x;
         let ratio_y = canvas_size.y / self.image_size.y;
-        self.zoom = ratio_x.min(ratio_y).min(1.0);
+        self.zoom = ratio_x.min(ratio_y);
     }
 
     pub fn apply_zoom_delta(&mut self, delta: f32, cursor: Option<egui::Pos2>, canvas: Rect) {

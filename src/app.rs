@@ -5,7 +5,7 @@ use egui::{CentralPanel, Context, Key, Vec2};
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
-use chrono::{DateTime, Local};
+use chrono;
 
 use crate::db::{Database, ImageRecord};
 use std::path::Path;
@@ -18,6 +18,13 @@ use crate::viewer::ViewerState;
 use crate::renderer::GammaRenderer;
 use std::sync::{Arc, Mutex};
 use egui_glow::glow;
+
+/// A wrapper to allow Arc<glow::Context> to be Send + Sync.
+/// In eframe/egui on desktop, the GL context is only used on the main thread.
+#[derive(Clone)]
+struct SendSyncGl(Arc<glow::Context>);
+unsafe impl Send for SendSyncGl {}
+unsafe impl Sync for SendSyncGl {}
 
 // ---------------------------------------------------------------------------
 // RivettApp
@@ -70,7 +77,7 @@ impl RivettApp {
         }).ok();
 
         if let Some(gl) = &cc.gl {
-            cc.egui_ctx.memory_mut(|mem| mem.data.insert_temp(egui::Id::new("gl_context"), gl.clone()));
+            cc.egui_ctx.memory_mut(|mem| mem.data.insert_temp(egui::Id::new("gl_context"), SendSyncGl(gl.clone())));
         }
 
         let mut app = Self {
@@ -79,6 +86,7 @@ impl RivettApp {
             image_cache:     ImageCache::new(32),
             listing:         None,
             session:         SessionState::new(settings.default_sort),
+            gamma_renderer:  None,
             current_path:    None,
             current_record:  None,
             metadata:        vec![],
@@ -370,7 +378,7 @@ impl RivettApp {
                 break 'img drag::Image::File(path.clone());
             };
             let Some(src) = image::RgbaImage::from_raw(
-                decoded.width, decoded.height, decoded.rgba.clone(),
+                decoded.width, decoded.height, decoded.to_u8(),
             ) else {
                 break 'img drag::Image::File(path.clone());
             };
@@ -469,7 +477,7 @@ impl RivettApp {
             "Rivett".to_string()
         };
 
-        if let Some(filter) = self.session.rating_filter {
+        if let Some(ref filter) = self.session.rating_filter {
             let scope = if self.listing.as_ref().map(|l| l.dir_path.as_os_str().is_empty()).unwrap_or(false) {
                 "Library"
             } else {
@@ -828,7 +836,7 @@ impl RivettApp {
     }
 
     fn apply_local_filter(&mut self, filter: Option<RatingFilter>, ctx: &Context) {
-        self.session.rating_filter = filter;
+        self.session.rating_filter = filter.clone();
         if let Some(ref mut listing) = self.listing {
             listing.rating_filter = filter;
         }
@@ -1117,7 +1125,7 @@ fn save_image_as(
     // 1. Get the source image
     let decoded = cached
         .ok_or_else(|| "image not in cache — navigate away and back, then retry".to_string())?;
-    let src = image::RgbaImage::from_raw(decoded.width, decoded.height, decoded.rgba.clone())
+    let src = image::RgbaImage::from_raw(decoded.width, decoded.height, decoded.to_u8())
         .ok_or("invalid pixel buffer")?;
     let rotated = match rotation {
         Rotation::None  => image::DynamicImage::ImageRgba8(src),
@@ -1256,7 +1264,7 @@ fn save_pixel_rotation(
 ) -> Result<(), String> {
     let decoded = cached
         .ok_or_else(|| "image not in cache — navigate away and back, then retry".to_string())?;
-    let src = image::RgbaImage::from_raw(decoded.width, decoded.height, decoded.rgba.clone())
+    let src = image::RgbaImage::from_raw(decoded.width, decoded.height, decoded.to_u8())
         .ok_or("invalid pixel buffer")?;
     let rotated = match rotation {
         Rotation::None  => image::DynamicImage::ImageRgba8(src),
@@ -1415,7 +1423,7 @@ impl eframe::App for RivettApp {
             if self.viewer.texture.is_some() {
                 let rect = self.viewer.image_rect(canvas);
                 let gamma = self.viewer.gamma;
-                let screen_size = ctx.screen_rect().size();
+                let screen_rect = ctx.screen_rect();
 
                 // 1. Handle texture upload if needed
                 if self.viewer.needs_texture_upload {
@@ -1447,10 +1455,10 @@ impl eframe::App for RivettApp {
                 if let Some(renderer) = &self.gamma_renderer {
                     let renderer = renderer.clone();
                     painter.add(egui::PaintCallback {
-                        rect,
+                        rect: canvas, // Cover the entire canvas to allow for zoom/pan clipping
                         callback: Arc::new(egui_glow::CallbackFn::new(move |_info, painter| {
                             let renderer = renderer.lock().unwrap();
-                            renderer.paint(painter.gl(), rect, screen_size, gamma);
+                            renderer.paint(painter.gl(), rect, canvas, gamma);
                         })),
                     });
                 } else {
@@ -1542,7 +1550,7 @@ impl eframe::App for RivettApp {
 }
 
 fn cc_gl_from_ctx(ctx: &Context) -> Option<Arc<glow::Context>> {
-    ctx.memory(|mem| mem.data.get_temp::<Arc<glow::Context>>(egui::Id::new("gl_context")))
+    ctx.memory(|mem| mem.data.get_temp::<SendSyncGl>(egui::Id::new("gl_context")).map(|s| s.0))
 }
 
 // ---------------------------------------------------------------------------
