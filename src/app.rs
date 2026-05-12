@@ -149,6 +149,12 @@ impl RivettApp {
         
         self.refresh_record();
 
+        if let Some(ref rec) = self.current_record {
+            if let Some(r) = rec.rating {
+                self.toast(format!("Rated: {} stars", "★".repeat(r as usize)));
+            }
+        }
+
         let rotation = self.session.rotation_for(&path);
         let adjustments = self.session.adjustments_for(&path);
 
@@ -305,7 +311,7 @@ impl RivettApp {
     fn execute_delete(&mut self, ctx: &Context) {
         self.delete_confirm = None;
         let Some(path) = self.current_path.clone() else { return };
-        match std::fs::remove_file(&path) {
+        match trash::delete(&path) {
             Ok(()) => {
                 let name = path.file_name()
                     .and_then(|n| n.to_str()).unwrap_or("?").to_string();
@@ -318,7 +324,7 @@ impl RivettApp {
                     listing.current_index = old_index.min(listing.files.len().saturating_sub(1));
                 }
 
-                self.toast(format!("Deleted: {name}"));
+                self.toast(format!("Moved to Trash: {name}"));
                 self.current_path   = None;
                 self.current_record = None;
                 self.metadata       = vec![];
@@ -722,7 +728,7 @@ impl RivettApp {
                         // 1. Exposure
                         ui.horizontal(|ui| {
                             ui.label("Exposure:");
-                            let old_expo = adj.exposure;
+                            let _old_expo = adj.exposure;
                             let mut speed = 0.05;
                             if ui.input(|i| i.modifiers.shift) { speed = 0.5; }
                             
@@ -776,8 +782,7 @@ impl RivettApp {
                             let (rect, response) = ui.allocate_at_least(egui::vec2(ui.available_width(), hist_height + 20.0), egui::Sense::drag());
                             let hist_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), hist_height));
                             
-                            let painter = ui.painter();
-                            painter.rect_filled(hist_rect, 2.0, egui::Color32::from_gray(30));
+                            ui.painter().rect_filled(hist_rect, 2.0, egui::Color32::from_gray(30));
 
                             // --- Clipping logic ---
                             // We need to calculate clipping relative to CURRENT remap_min/max
@@ -808,7 +813,7 @@ impl RivettApp {
                                 if max_c > 0 {
                                     let pct = (max_c as f32 / total * 100.0).max(0.1);
                                     let color = if pct > 1.0 { egui::Color32::from_rgb(255, 50, 50) } else { egui::Color32::from_rgb(255, 200, 0) };
-                                    painter.rect_filled(side_rect, 0.0, color);
+                                    ui.painter().rect_filled(side_rect, 0.0, color);
                                     
                                     ui.interact(side_rect, egui::Id::new(label), egui::Sense::hover()).on_hover_ui(|ui| {
                                         ui.label(egui::RichText::new(format!("{} clipping", label)).strong());
@@ -826,7 +831,7 @@ impl RivettApp {
                             draw_clip_bar(ui, egui::Rect::from_min_max(egui::pos2(hist_rect.right() - bar_w, hist_rect.top()), hist_rect.right_bottom()), high_count, "Highlight");
 
                             // --- Paint Channels ---
-                            let paint_channel = |bins: &[f32], color: egui::Color32| {
+                            let paint_channel = |ui: &mut egui::Ui, bins: &[f32], color: egui::Color32| {
                                 if bins.is_empty() { return; }
                                 let bin_width = hist_rect.width() / bins.len() as f32;
                                 let mut points = Vec::with_capacity(bins.len() * 2);
@@ -837,32 +842,32 @@ impl RivettApp {
                                     points.push(egui::pos2(x, y));
                                     points.push(egui::pos2(x + bin_width, y));
                                 }
-                                painter.add(egui::Shape::line(points, egui::Stroke::new(1.2, color)));
+                                ui.painter().add(egui::Shape::line(points, egui::Stroke::new(1.2, color)));
                             };
 
-                            paint_channel(&img.histograms.r, egui::Color32::from_rgba_unmultiplied(255, 50, 50, 180));
-                            paint_channel(&img.histograms.g, egui::Color32::from_rgba_unmultiplied(50, 255, 50, 180));
-                            paint_channel(&img.histograms.b, egui::Color32::from_rgba_unmultiplied(50, 50, 255, 180));
+                            paint_channel(ui, &img.histograms.r, egui::Color32::from_rgba_unmultiplied(255, 50, 50, 180));
+                            paint_channel(ui, &img.histograms.g, egui::Color32::from_rgba_unmultiplied(50, 255, 50, 180));
+                            paint_channel(ui, &img.histograms.b, egui::Color32::from_rgba_unmultiplied(50, 50, 255, 180));
 
                             // --- Handles ---
                             let to_x = |val: f32| hist_rect.min.x + val.clamp(0.0, 1.0) * hist_rect.width();
                             let from_x = |x: f32| (x - hist_rect.min.x) / hist_rect.width();
 
-                            let mut min_x = to_x(adj.remap_min);
-                            let mut max_x = to_x(adj.remap_max);
+                            let min_x = to_x(adj.remap_min);
+                            let max_x = to_x(adj.remap_max);
 
                             let handle_w = 8.0;
-                            let draw_handle = |x: f32, id: &str| {
+                            let draw_handle = |ui: &mut egui::Ui, x: f32, id: &str| {
                                 let h_rect = egui::Rect::from_center_size(egui::pos2(x, hist_rect.bottom() + 8.0), egui::vec2(handle_w, 16.0));
                                 let res = ui.interact(h_rect, egui::Id::new(id), egui::Sense::drag());
                                 let color = if res.dragged() || res.hovered() { egui::Color32::WHITE } else { egui::Color32::from_gray(180) };
-                                painter.rect_filled(h_rect, 1.0, color);
-                                painter.line_segment([egui::pos2(x, hist_rect.top()), egui::pos2(x, hist_rect.bottom())], egui::Stroke::new(1.0, color.poly_multiply(0.5)));
+                                ui.painter().rect_filled(h_rect, 1.0, color);
+                                ui.painter().line_segment([egui::pos2(x, hist_rect.top()), egui::pos2(x, hist_rect.bottom())], egui::Stroke::new(1.0, color.gamma_multiply(0.5)));
                                 res
                             };
 
-                            let res_min = draw_handle(min_x, "min_handle");
-                            let res_max = draw_handle(max_x, "max_handle");
+                            let res_min = draw_handle(ui, min_x, "min_handle");
+                            let res_max = draw_handle(ui, max_x, "max_handle");
 
                             if res_min.dragged() {
                                 adj.remap_min = from_x(min_x + res_min.drag_delta().x);
