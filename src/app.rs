@@ -108,8 +108,8 @@ impl RivettApp {
 
     // ── Toast helper ──────────────────────────────────────────────────────
 
-    fn toast(&mut self, msg: impl Into<String>) {
-        self.toast = Some(Toast::new(msg.into()));
+    fn toast(&mut self, msg: impl Into<String>, kind: ToastKind) {
+        self.toast = Some(Toast::new(msg.into(), kind));
     }
 
     // ── Opening / Loading ─────────────────────────────────────────────────
@@ -145,13 +145,20 @@ impl RivettApp {
             }
         };
 
+        // Clear existing image-status toast when moving to a new image
+        if let Some(ref t) = self.toast {
+            if t.kind == ToastKind::ImageStatus {
+                self.toast = None;
+            }
+        }
+
         self.current_path = Some(path.clone());
         
         self.refresh_record();
 
         if let Some(ref rec) = self.current_record {
             if let Some(r) = rec.rating {
-                self.toast(format!("Rated: {} stars", "★".repeat(r as usize)));
+                self.toast(format!("Rated: {} stars", "★".repeat(r as usize)), ToastKind::ImageStatus);
             }
         }
 
@@ -1704,14 +1711,21 @@ fn cc_gl_from_ctx(ctx: &Context) -> Option<Arc<glow::Context>> {
 // Helpers
 // ---------------------------------------------------------------------------
 
+#[derive(PartialEq)]
+enum ToastKind {
+    General,
+    ImageStatus,
+}
+
 struct Toast {
     message: String,
     start:   Instant,
+    kind:    ToastKind,
 }
 
 impl Toast {
-    fn new(message: String) -> Self {
-        Self { message, start: Instant::now() }
+    fn new(message: String, kind: ToastKind) -> Self {
+        Self { message, start: Instant::now(), kind }
     }
     fn alive(&self) -> bool {
         self.start.elapsed() < Duration::from_secs(3)
