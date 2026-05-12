@@ -273,7 +273,7 @@ impl RivettApp {
         let Some(path) = self.current_path.clone() else { return };
         self.session.ignore_image(path.clone());
         self.toast(format!("Hidden: {}", path.file_name()
-            .and_then(|n| n.to_str()).unwrap_or("?")));
+            .and_then(|n| n.to_str()).unwrap_or("?")), ToastKind::ImageStatus);
         let before = self.current_path.clone();
         self.navigate_next(ctx, false);
         if self.current_path == before {
@@ -295,7 +295,7 @@ impl RivettApp {
                     self.toast(match rating {
                         Some(r) => format!("Rated: {} stars", "★".repeat(r as usize)),
                         None    => "Rating cleared".to_string(),
-                    });
+                    }, ToastKind::ImageStatus);
                     self.refresh_record();
                 }
             }
@@ -312,7 +312,7 @@ impl RivettApp {
 
     fn confirm_delete(&mut self) {
         self.delete_confirm = Some(DeleteConfirm::new());
-        self.toast("Press Delete again to confirm — Esc to cancel");
+        self.toast("Press Delete again to confirm — Esc to cancel", ToastKind::General);
     }
 
     fn execute_delete(&mut self, ctx: &Context) {
@@ -331,7 +331,7 @@ impl RivettApp {
                     listing.current_index = old_index.min(listing.files.len().saturating_sub(1));
                 }
 
-                self.toast(format!("Moved to Trash: {name}"));
+                self.toast(format!("Moved to Trash: {name}"), ToastKind::General);
                 self.current_path   = None;
                 self.current_record = None;
                 self.metadata       = vec![];
@@ -339,7 +339,7 @@ impl RivettApp {
                 self.load_current(ctx, false);
             }
             Err(e) => {
-                self.toast(format!("Delete failed: {e}"));
+                self.toast(format!("Delete failed: {e}"), ToastKind::General);
             }
         }
     }
@@ -375,7 +375,7 @@ impl RivettApp {
             }
         }
         self.load_current(ctx, false);
-        self.toast("Directory refreshed");
+        self.toast("Directory refreshed", ToastKind::General);
     }
 
     // ── Drag-out ──────────────────────────────────────────────────────────
@@ -431,12 +431,12 @@ impl RivettApp {
         let strip_metadata = self.session.is_metadata_stripped(&path);
         
         if rotation.is_identity() && !strip_metadata {
-            self.toast("No changes to save");
+            self.toast("No changes to save", ToastKind::General);
             return;
         }
 
         let Some(fmt) = SupportedFormat::from_path(&path) else {
-            self.toast("Unknown format — cannot save");
+            self.toast("Unknown format — cannot save", ToastKind::General);
             return;
         };
 
@@ -449,8 +449,8 @@ impl RivettApp {
         } else {
             match fmt {
                 SupportedFormat::Jpeg => save_jpeg_exif_rotation(&path, rotation),
-                SupportedFormat::Svg  => { self.toast("Cannot save changes for SVG files"); return; }
-                SupportedFormat::Raw  => { self.toast("Cannot save changes for RAW files"); return; }
+                SupportedFormat::Svg  => { self.toast("Cannot save changes for SVG files", ToastKind::General); return; }
+                SupportedFormat::Raw  => { self.toast("Cannot save changes for RAW files", ToastKind::General); return; }
                 _                     => save_pixel_rotation(&path, fmt, rotation, cached_clone),
             }
         };
@@ -463,9 +463,9 @@ impl RivettApp {
                 }
                 self.image_cache.remove(&path);
                 self.load_current(ctx, true);
-                self.toast("Saved");
+                self.toast("Saved", ToastKind::General);
             }
-            Err(e) => self.toast(format!("Save failed: {e}")),
+            Err(e) => self.toast(format!("Save failed: {e}"), ToastKind::General),
         }
     }
 
@@ -517,7 +517,7 @@ impl RivettApp {
         if input.key_pressed(Key::Escape) {
             if self.delete_confirm.is_some() {
                 self.delete_confirm = None;
-                self.toast("Delete cancelled");
+                self.toast("Delete cancelled", ToastKind::General);
             }
         }
 
@@ -1546,7 +1546,7 @@ impl eframe::App for RivettApp {
             if response.double_clicked() {
                 if let Some(ref err) = self.viewer.load_error {
                     ctx.copy_text(err.clone());
-                    self.toast("Error message copied to clipboard");
+                    self.toast("Error message copied to clipboard", ToastKind::General);
                 } else {
                     if let Some(path) = rfd::FileDialog::new()
                         .add_filter("Images", &[
@@ -1563,7 +1563,7 @@ impl eframe::App for RivettApp {
             if response.clicked() && self.viewer.load_error.is_some() {
                 if let Some(ref err) = self.viewer.load_error {
                     ctx.copy_text(err.clone());
-                    self.toast("Error message copied to clipboard");
+                    self.toast("Error message copied to clipboard", ToastKind::General);
                 }
             }
 
