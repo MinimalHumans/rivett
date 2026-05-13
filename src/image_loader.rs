@@ -224,6 +224,9 @@ pub struct DecodedImage {
     pub width:      u32,
     pub height:     u32,
     pub histograms: Histograms,
+    /// True for images with genuine HDR/wide-gamut data (EXR, RAW integer).
+    /// Only these images support meaningful black/white point remapping.
+    pub is_hdr:     bool,
 }
 
 impl DecodedImage {
@@ -265,7 +268,13 @@ impl DecodedImage {
             total_pixels,
         };
 
-        Self { rgba, width, height, histograms }
+        Self { rgba, width, height, histograms, is_hdr: false }
+    }
+
+    /// Mark this image as HDR so histogram remap handles are shown in the UI.
+    pub fn mark_hdr(mut self) -> Self {
+        self.is_hdr = true;
+        self
     }
 
     pub fn new_from_u8(rgba: Vec<u8>, width: u32, height: u32) -> Self {
@@ -312,7 +321,7 @@ pub fn load_image(path: &Path) -> Result<DecodedImage, String> {
             if let Some(SupportedFormat::Exr) = fmt {
                 let rgba = img.to_rgba32f();
                 let (width, height) = rgba.dimensions();
-                Ok(DecodedImage::new(rgba.into_raw(), width, height))
+                Ok(DecodedImage::new(rgba.into_raw(), width, height).mark_hdr())
             } else {
                 let rgba = img.to_rgba8();
                 let (width, height) = rgba.dimensions();
@@ -384,7 +393,7 @@ fn load_raw(path: &Path) -> Result<DecodedImage, String> {
                             }
                         }
 
-                        return Ok(DecodedImage::new(final_rgba, final_w, final_h));
+                        return Ok(DecodedImage::new(final_rgba, final_w, final_h).mark_hdr());
                     }
                     Err("Raw sensor data requires debayering (not yet implemented)".to_string())
                 }

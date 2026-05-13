@@ -658,8 +658,8 @@ impl RivettApp {
         let cached = self.image_cache.get(&src_path);
         
         match save_image_as(&src_path, &state.output_path, rotation, cached, state.preserve_metadata) {
-            Ok(()) => self.toast("Saved successfully"),
-            Err(e) => self.toast(format!("Save failed: {e}")),
+            Ok(()) => self.toast("Saved successfully", ToastKind::General),
+            Err(e) => self.toast(format!("Save failed: {e}"), ToastKind::General),
         }
     }
 
@@ -732,41 +732,47 @@ impl RivettApp {
                         let mut adj = self.session.adjustments_for(&path);
                         let mut changed = false;
 
-                        // 1. Exposure
-                        ui.horizontal(|ui| {
-                            ui.label("Exposure:");
-                            let _old_expo = adj.exposure;
-                            let mut speed = 0.05;
-                            if ui.input(|i| i.modifiers.shift) { speed = 0.5; }
-                            
-                            let res = ui.add(egui::DragValue::new(&mut adj.exposure)
-                                .speed(speed)
-                                .suffix(" stops"));
-                            
-                            if res.changed() {
-                                if ui.input(|i| i.modifiers.shift) {
-                                    adj.exposure = (adj.exposure * 2.0).round() / 2.0;
+                        // Exposure + Gamma in a Grid so labels/DragValues/Sliders align
+                        let shift_held = ui.input(|i| i.modifiers.shift);
+                        egui::Grid::new("adj_grid")
+                            .num_columns(3)
+                            .spacing([4.0, 4.0])
+                            .show(ui, |ui| {
+                                // 1. Exposure
+                                ui.label("Exposure");
+                                let drag_speed = if shift_held { 0.5 } else { 0.05 };
+                                if ui.add(egui::DragValue::new(&mut adj.exposure)
+                                    .speed(drag_speed)
+                                    .suffix(" stops")).changed()
+                                {
+                                    changed = true;
                                 }
-                                changed = true;
-                            }
-                            if ui.add(egui::Slider::new(&mut adj.exposure, -4.0..=4.0).show_value(false)).changed() {
-                                if ui.input(|i| i.modifiers.shift) {
-                                    adj.exposure = (adj.exposure * 2.0).round() / 2.0;
+                                if ui.add(egui::Slider::new(&mut adj.exposure, -4.0..=4.0)
+                                    .show_value(false)).changed()
+                                {
+                                    changed = true;
                                 }
-                                changed = true;
-                            }
-                        });
+                                ui.end_row();
 
-                        // 2. Gamma
-                        ui.horizontal(|ui| {
-                            ui.label("Gamma:   ");
-                            if ui.add(egui::DragValue::new(&mut adj.gamma).speed(0.01)).changed() {
-                                changed = true;
-                            }
-                            if ui.add(egui::Slider::new(&mut adj.gamma, 0.1..=4.0).show_value(false)).changed() {
-                                changed = true;
-                            }
-                        });
+                                // 2. Gamma
+                                ui.label("Gamma");
+                                if ui.add(egui::DragValue::new(&mut adj.gamma)
+                                    .speed(0.01)).changed()
+                                {
+                                    changed = true;
+                                }
+                                if ui.add(egui::Slider::new(&mut adj.gamma, 0.1..=4.0)
+                                    .show_value(false)).changed()
+                                {
+                                    changed = true;
+                                }
+                                ui.end_row();
+                            });
+
+                        // Snap exposure to half-stop increments when Shift is held
+                        if changed && shift_held {
+                            adj.exposure = (adj.exposure * 2.0).round() / 2.0;
+                        }
 
                         if ui.button("Reset All").clicked() {
                             adj = crate::session::ImageAdjustments::default();
@@ -856,50 +862,56 @@ impl RivettApp {
                             paint_channel(ui, &img.histograms.g, egui::Color32::from_rgba_unmultiplied(50, 255, 50, 180));
                             paint_channel(ui, &img.histograms.b, egui::Color32::from_rgba_unmultiplied(50, 50, 255, 180));
 
-                            // --- Handles ---
-                            let to_x = |val: f32| hist_rect.min.x + val.clamp(0.0, 1.0) * hist_rect.width();
-                            let from_x = |x: f32| (x - hist_rect.min.x) / hist_rect.width();
+                            // --- Handles (HDR only) ---
+                            // Black/white point remapping is only meaningful for images
+                            // with genuine HDR data (EXR, RAW). Hide the handles entirely
+                            // for standard 8-bit images so they can't be dragged to a
+                            // broken state.
+                            if img.is_hdr {
+                                let to_x = |val: f32| hist_rect.min.x + val.clamp(0.0, 1.0) * hist_rect.width();
+                                let from_x = |x: f32| (x - hist_rect.min.x) / hist_rect.width();
 
-                            let min_x = to_x(adj.remap_min);
-                            let max_x = to_x(adj.remap_max);
+                                let min_x = to_x(adj.remap_min);
+                                let max_x = to_x(adj.remap_max);
 
-                            let handle_w = 8.0;
-                            let draw_handle = |ui: &mut egui::Ui, x: f32, id: &str| {
-                                let h_rect = egui::Rect::from_center_size(egui::pos2(x, hist_rect.bottom() + 8.0), egui::vec2(handle_w, 16.0));
-                                let res = ui.interact(h_rect, egui::Id::new(id), egui::Sense::drag());
-                                let color = if res.dragged() || res.hovered() { egui::Color32::WHITE } else { egui::Color32::from_gray(180) };
-                                ui.painter().rect_filled(h_rect, 1.0, color);
-                                ui.painter().line_segment([egui::pos2(x, hist_rect.top()), egui::pos2(x, hist_rect.bottom())], egui::Stroke::new(1.0, color.gamma_multiply(0.5)));
-                                res
-                            };
+                                let handle_w = 8.0;
+                                let draw_handle = |ui: &mut egui::Ui, x: f32, id: &str| {
+                                    let h_rect = egui::Rect::from_center_size(egui::pos2(x, hist_rect.bottom() + 8.0), egui::vec2(handle_w, 16.0));
+                                    let res = ui.interact(h_rect, egui::Id::new(id), egui::Sense::drag());
+                                    let color = if res.dragged() || res.hovered() { egui::Color32::WHITE } else { egui::Color32::from_gray(180) };
+                                    ui.painter().rect_filled(h_rect, 1.0, color);
+                                    ui.painter().line_segment([egui::pos2(x, hist_rect.top()), egui::pos2(x, hist_rect.bottom())], egui::Stroke::new(1.0, color.gamma_multiply(0.5)));
+                                    res
+                                };
 
-                            let res_min = draw_handle(ui, min_x, "min_handle");
-                            let res_max = draw_handle(ui, max_x, "max_handle");
+                                let res_min = draw_handle(ui, min_x, "min_handle");
+                                let res_max = draw_handle(ui, max_x, "max_handle");
 
-                            if res_min.dragged() {
-                                adj.remap_min = from_x(min_x + res_min.drag_delta().x);
-                                changed = true;
+                                if res_min.dragged() {
+                                    adj.remap_min = from_x(min_x + res_min.drag_delta().x);
+                                    changed = true;
+                                }
+                                if res_max.dragged() {
+                                    adj.remap_max = from_x(max_x + res_max.drag_delta().x);
+                                    changed = true;
+                                }
+
+                                // Moving both
+                                if response.dragged() && !res_min.dragged() && !res_max.dragged() {
+                                    let delta = from_x(hist_rect.min.x + response.drag_delta().x) - from_x(hist_rect.min.x);
+                                    adj.remap_min += delta;
+                                    adj.remap_max += delta;
+                                    changed = true;
+                                }
+
+                                ui.add_space(10.0);
+                                ui.horizontal(|ui| {
+                                    ui.label("Black:");
+                                    if ui.add(egui::DragValue::new(&mut adj.remap_min).speed(0.005)).changed() { changed = true; }
+                                    ui.label("White:");
+                                    if ui.add(egui::DragValue::new(&mut adj.remap_max).speed(0.005)).changed() { changed = true; }
+                                });
                             }
-                            if res_max.dragged() {
-                                adj.remap_max = from_x(max_x + res_max.drag_delta().x);
-                                changed = true;
-                            }
-                            
-                            // Moving both
-                            if response.dragged() && !res_min.dragged() && !res_max.dragged() {
-                                let delta = from_x(hist_rect.min.x + response.drag_delta().x) - from_x(hist_rect.min.x);
-                                adj.remap_min += delta;
-                                adj.remap_max += delta;
-                                changed = true;
-                            }
-
-                            ui.add_space(10.0);
-                            ui.horizontal(|ui| {
-                                ui.label("Black:");
-                                if ui.add(egui::DragValue::new(&mut adj.remap_min).speed(0.005)).changed() { changed = true; }
-                                ui.label("White:");
-                                if ui.add(egui::DragValue::new(&mut adj.remap_max).speed(0.005)).changed() { changed = true; }
-                            });
                         }
 
                         ui.separator();
