@@ -206,7 +206,7 @@ impl ViewerState {
         }
         let ratio_x = canvas_size.x / self.image_size.x;
         let ratio_y = canvas_size.y / self.image_size.y;
-        self.zoom = ratio_x.min(ratio_y);
+        self.zoom = ratio_x.min(ratio_y).min(1.0);
     }
 
     pub fn apply_zoom_delta(&mut self, delta: f32, cursor: Option<egui::Pos2>, canvas: Rect) {
@@ -303,15 +303,22 @@ mod tests {
         v.fit_to_window = false;
         v.image_size = Vec2::new(1000.0, 1000.0);
         v.zoom = 0.5;
-        
+
+        // Custom (0.5) → Fit
         v.toggle_fit(Vec2::new(100.0, 100.0));
         assert!(v.fit_to_window);
         assert_eq!(v.zoom, 0.1); // fits 1000 into 100
         assert_eq!(v.pan, Vec2::ZERO);
-        
+
+        // Fit → 100%
         v.toggle_fit(Vec2::new(100.0, 100.0));
         assert!(!v.fit_to_window);
-        assert_eq!(v.zoom, 0.5); // restored
+        assert_eq!(v.zoom, 1.0);
+
+        // 100% → restore custom (0.5)
+        v.toggle_fit(Vec2::new(100.0, 100.0));
+        assert!(!v.fit_to_window);
+        assert_eq!(v.zoom, 0.5);
     }
 
     #[test]
