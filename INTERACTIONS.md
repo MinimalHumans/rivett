@@ -8,8 +8,10 @@
 
 | Key | Action |
 |-----|--------|
-| `→` / `Page Down` | Next image |
-| `←` / `Page Up` | Previous image |
+| `→` | Next image |
+| `←` | Previous image |
+| `↓` / `Page Down` | Jump forward 10 images |
+| `↑` / `Page Up` | Jump back 10 images |
 | `Home` | First image |
 | `End` | Last image |
 | `Shift` + navigate | Preserve current zoom level while navigating |
@@ -19,7 +21,6 @@
 | Key | Action |
 |-----|--------|
 | `F` | Toggle fit-to-window / actual size (100%) |
-| `Ctrl+0` | Zoom to actual size (100%) |
 | `I` | Toggle info panel |
 
 ### Rating
@@ -41,7 +42,6 @@
 | Key | Action |
 |-----|--------|
 | `H` | Hide / ignore current image |
-| `M` | Toggle metadata stripping |
 | `Delete` (first press) | Arm delete — opens a 4-second confirm window |
 | `Delete` (second press, within 4 s) | Move to trash |
 | `Escape` | Cancel armed delete |
@@ -63,13 +63,12 @@
 |-------------|--------|
 | **Left-drag** | Pan image |
 | **Ctrl + Left-drag** | Drag-out: export current file to OS (Windows only, includes thumbnail) |
-| **Middle-drag** | Drag-out (same as Ctrl+Left-drag) |
 | **Scroll wheel** | Zoom in/out (1.1× per tick, centered on cursor) |
 | **Pinch gesture** (trackpad) | Smooth zoom centered on cursor |
 | **Double-click** | Open file picker |
 | **Double-click** (on load error) | Copy error message to clipboard |
 | **Single-click** (on load error) | Copy error message to clipboard |
-| **Right-click** | Context menu (all actions with shortcut hints) |
+| **Right-click** | Context menu (all actions with shortcut hints, includes "Strip metadata" action) |
 | **Drop file onto window** | Open dropped image |
 
 ---

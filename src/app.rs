@@ -49,7 +49,6 @@ pub struct RivettApp {
 
     // Drag-out state
     pending_drag_out:  bool, // set on gesture detection; consumed at top of next update()
-    middle_btn_on_canvas: bool, // tracks middle button pressed-while-hovering canvas
 
     // Save As state
     save_as_state:   Option<SaveAsState>,
@@ -94,7 +93,6 @@ impl RivettApp {
             toast:           None,
             delete_confirm:  None,
             pending_drag_out:     false,
-            middle_btn_on_canvas: false,
             save_as_state:   None,
             settings,
         };
@@ -219,27 +217,44 @@ impl RivettApp {
     // ── Navigation ────────────────────────────────────────────────────────
 
     fn navigate_next(&mut self, ctx: &Context, preserve_zoom: bool) {
+        self.navigate_next_n(ctx, preserve_zoom, 1);
+    }
+
+    fn navigate_next_n(&mut self, ctx: &Context, preserve_zoom: bool, n: usize) {
         let mut moved = false;
         if let Some(ref mut listing) = self.listing {
-            while listing.go_next() {
-                moved = true;
-                if let Some(p) = listing.current() {
-                    // Check ignore without using 'self' directly in the loop
-                    if !self.session.ignored_images.contains(p) { break; }
+            for _ in 0..n {
+                let mut step = false;
+                while listing.go_next() {
+                    step = true;
+                    if let Some(p) = listing.current() {
+                        if !self.session.ignored_images.contains(p) { break; }
+                    }
                 }
+                if !step { break; }
+                moved = true;
             }
         }
         if moved { self.load_current(ctx, preserve_zoom); }
     }
 
     fn navigate_prev(&mut self, ctx: &Context, preserve_zoom: bool) {
+        self.navigate_prev_n(ctx, preserve_zoom, 1);
+    }
+
+    fn navigate_prev_n(&mut self, ctx: &Context, preserve_zoom: bool, n: usize) {
         let mut moved = false;
         if let Some(ref mut listing) = self.listing {
-            while listing.go_prev() {
-                moved = true;
-                if let Some(p) = listing.current() {
-                    if !self.session.ignored_images.contains(p) { break; }
+            for _ in 0..n {
+                let mut step = false;
+                while listing.go_prev() {
+                    step = true;
+                    if let Some(p) = listing.current() {
+                        if !self.session.ignored_images.contains(p) { break; }
+                    }
                 }
+                if !step { break; }
+                moved = true;
             }
         }
         if moved { self.load_current(ctx, preserve_zoom); }
@@ -535,11 +550,17 @@ impl RivettApp {
         let shift = input.modifiers.shift;
         let preserve_zoom = shift;
 
-        if input.key_pressed(Key::ArrowRight) || input.key_pressed(Key::PageDown) {
+        if input.key_pressed(Key::ArrowRight) {
             self.navigate_next(ctx, preserve_zoom);
         }
-        if input.key_pressed(Key::ArrowLeft) || input.key_pressed(Key::PageUp) {
+        if input.key_pressed(Key::ArrowLeft) {
             self.navigate_prev(ctx, preserve_zoom);
+        }
+        if input.key_pressed(Key::ArrowDown) || input.key_pressed(Key::PageDown) {
+            self.navigate_next_n(ctx, preserve_zoom, 10);
+        }
+        if input.key_pressed(Key::ArrowUp) || input.key_pressed(Key::PageUp) {
+            self.navigate_prev_n(ctx, preserve_zoom, 10);
         }
         if input.key_pressed(Key::Home) { self.navigate_first(ctx, preserve_zoom); }
         if input.key_pressed(Key::End)  { self.navigate_last(ctx, preserve_zoom); }
@@ -568,12 +589,6 @@ impl RivettApp {
 
         if input.key_pressed(Key::H) { self.hide_current(ctx); }
 
-        if input.key_pressed(Key::M) {
-            if let Some(path) = self.current_path.clone() {
-                self.session.toggle_metadata_strip(path);
-            }
-        }
-
         if input.key_pressed(Key::OpenBracket) {
             self.rotate_current(false, ctx);
         }
@@ -582,9 +597,7 @@ impl RivettApp {
         }
 
         let ctrl = input.modifiers.ctrl;
-        if ctrl && input.key_pressed(Key::Num0) {
-            self.viewer.zoom_actual_size();
-        } else if input.key_pressed(Key::F) {
+        if input.key_pressed(Key::F) {
             self.viewer.toggle_fit(ctx.screen_rect().size());
         }
 
@@ -1140,17 +1153,14 @@ impl RivettApp {
 
             let has_metadata = !self.metadata.is_empty();
             let is_stripped = self.current_path.as_ref().map(|p| self.session.is_metadata_stripped(p)).unwrap_or(false);
-            if ui.add_enabled(has_image && has_metadata, egui::Checkbox::new(&mut is_stripped.clone(), "Strip metadata")).clicked() {
+            if ui.add_enabled(has_image && has_metadata && !is_stripped, egui::Button::new("Strip metadata")).clicked() {
                 if let Some(path) = self.current_path.clone() {
                     self.session.toggle_metadata_strip(path);
                 }
                 ui.close_menu();
             }
-            // Overwrite the checkbox value manually since we can't easily pass the mutable reference into egui::Checkbox in this structure
-            if let Some(path) = self.current_path.as_ref() {
-                if self.session.is_metadata_stripped(path) {
-                    ui.label(egui::RichText::new("  (* pending save)").small().italics());
-                }
+            if is_stripped {
+                ui.label(egui::RichText::new("  (* metadata strip pending save)").small().italics());
             }
 
             ui.separator();
@@ -1518,29 +1528,10 @@ impl eframe::App for RivettApp {
 
             let ctrl_held = ctx.input(|i| i.modifiers.ctrl);
 
-            // Middle-mouse drag detection.
-            // egui's Sense::click_and_drag() only tracks the primary button, so
-            // drag_started_by(Middle) never fires. Track the middle button manually.
-            let (middle_pressed, middle_down, pointer_moving) = ctx.input(|i| (
-                i.pointer.button_pressed(egui::PointerButton::Middle),
-                i.pointer.button_down(egui::PointerButton::Middle),
-                i.pointer.is_moving(),
-            ));
-            if middle_pressed && response.hovered() {
-                self.middle_btn_on_canvas = true;
-            }
-            if !middle_down {
-                self.middle_btn_on_canvas = false;
-            }
-            let middle_drag_started = self.middle_btn_on_canvas && middle_down && pointer_moving;
-
             // Detect drag-out gesture; schedule for execution at the top of the next frame.
-            let drag_out_trigger =
-                (response.drag_started_by(egui::PointerButton::Primary) && ctrl_held)
-                || middle_drag_started;
+            let drag_out_trigger = response.drag_started_by(egui::PointerButton::Primary) && ctrl_held;
             if drag_out_trigger && !self.pending_drag_out && self.current_path.is_some() {
                 self.pending_drag_out = true;
-                self.middle_btn_on_canvas = false; // consume so it doesn't re-fire
             }
 
             // Pan: primary drag only when Ctrl is not held
