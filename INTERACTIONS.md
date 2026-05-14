@@ -12,6 +12,7 @@
 | `←` | Previous image |
 | `↓` / `Page Down` | Jump forward 10 images |
 | `↑` / `Page Up` | Jump back 10 images |
+| `Alt+↑` | Navigate to parent directory (opens first image there) |
 | `Home` | First image |
 | `End` | Last image |
 | `Shift` + navigate | Preserve current zoom level while navigating |

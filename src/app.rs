@@ -260,6 +260,28 @@ impl RivettApp {
         if moved { self.load_current(ctx, preserve_zoom); }
     }
 
+    // ── Navigate to parent directory ─────────────────────────────────────
+
+    fn navigate_to_parent(&mut self, ctx: &Context) {
+        let current_dir = self.listing.as_ref()
+            .and_then(|l| l.current().and_then(|p| p.parent()).map(|p| p.to_path_buf()))
+            .or_else(|| self.current_path.as_ref().and_then(|p| p.parent()).map(|p| p.to_path_buf()));
+
+        let Some(dir) = current_dir else { return };
+        let Some(parent) = dir.parent() else { return };
+
+        let sort = self.session_sort_order();
+        let db   = self.db.as_ref();
+        match DirectoryListing::scan(parent, sort, None, db) {
+            Ok(mut listing) => {
+                listing.go_to_first();
+                self.listing = Some(listing);
+                self.load_current(ctx, false);
+            }
+            Err(e) => log::warn!("failed to scan parent directory: {e}"),
+        }
+    }
+
     // ── Navigate to list boundaries ───────────────────────────────────────
 
     fn navigate_first(&mut self, ctx: &Context, preserve_zoom: bool) {
@@ -561,6 +583,9 @@ impl RivettApp {
         }
         if input.key_pressed(Key::ArrowUp) || input.key_pressed(Key::PageUp) {
             self.navigate_prev_n(ctx, preserve_zoom, 10);
+        }
+        if input.modifiers.alt && input.key_pressed(Key::ArrowUp) {
+            self.navigate_to_parent(ctx);
         }
         if input.key_pressed(Key::Home) { self.navigate_first(ctx, preserve_zoom); }
         if input.key_pressed(Key::End)  { self.navigate_last(ctx, preserve_zoom); }
