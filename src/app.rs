@@ -700,6 +700,18 @@ impl RivettApp {
                         });
                         ui.separator();
 
+                        // Rating — centered, no label, second row
+                        {
+                            let rating = self.current_record.as_ref().and_then(|r| r.rating);
+                            let stars = match rating {
+                                None    => "—".to_string(),
+                                Some(r) => format!("{} ({})", "★".repeat(r as usize), r),
+                            };
+                            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                                ui.label(stars);
+                            });
+                        }
+
                         if let Some(parent) = path.parent() {
                             label_kv(ui, "Folder", parent.display().to_string());
                         }
@@ -730,62 +742,12 @@ impl RivettApp {
                         label_kv(ui, "Zoom", format!("{:.0}%", self.viewer.zoom * 100.0));
 
                         ui.separator();
-                        ui.heading("Viewing Adjustment");
 
                         let mut adj = self.session.adjustments_for(&path);
                         let mut changed = false;
-
-                        // Exposure + Gamma in a Grid so labels/DragValues/Sliders align
                         let shift_held = ui.input(|i| i.modifiers.shift);
-                        egui::Grid::new("adj_grid")
-                            .num_columns(3)
-                            .spacing([4.0, 4.0])
-                            .show(ui, |ui| {
-                                // 1. Exposure
-                                ui.label("Exposure");
-                                let drag_speed = if shift_held { 0.5 } else { 0.05 };
-                                if ui.add(egui::DragValue::new(&mut adj.exposure)
-                                    .speed(drag_speed)
-                                    .suffix(" stops")).changed()
-                                {
-                                    changed = true;
-                                }
-                                if ui.add(egui::Slider::new(&mut adj.exposure, -4.0..=4.0)
-                                    .show_value(false)).changed()
-                                {
-                                    changed = true;
-                                }
-                                ui.end_row();
-
-                                // 2. Gamma
-                                ui.label("Gamma");
-                                if ui.add(egui::DragValue::new(&mut adj.gamma)
-                                    .speed(0.01)).changed()
-                                {
-                                    changed = true;
-                                }
-                                if ui.add(egui::Slider::new(&mut adj.gamma, 0.1..=4.0)
-                                    .show_value(false)).changed()
-                                {
-                                    changed = true;
-                                }
-                                ui.end_row();
-                            });
-
-                        // Snap exposure to half-stop increments when Shift is held
-                        if changed && shift_held {
-                            adj.exposure = (adj.exposure * 2.0).round() / 2.0;
-                        }
-
-                        if ui.button("Reset All").clicked() {
-                            adj = crate::session::ImageAdjustments::default();
-                            changed = true;
-                        }
 
                         if let Some(img) = self.image_cache.get(&path) {
-                            ui.separator();
-                            ui.heading("Histogram");
-                            
                             let hist_height = 80.0;
                             let bar_w = 6.0;
                             let (rect, response) = ui.allocate_at_least(egui::vec2(ui.available_width(), hist_height + 20.0), egui::Sense::drag());
@@ -796,21 +758,13 @@ impl RivettApp {
 
                             ui.painter().rect_filled(hist_rect, 2.0, egui::Color32::from_gray(30));
 
-                            // --- Clipping logic ---
-                            // We need to calculate clipping relative to CURRENT remap_min/max
-                            // Since we only have raw data (original clipping), we approximate 
-                            // for now or we'd need to re-scan. Let's use the raw counts for 0..1.
-                            
                             let mut low_count = [0u32; 3];
                             let mut high_count = [0u32; 3];
-                            
-                            // For a true VFX workflow, we'd re-scan the f32 buffer here if adj changed.
-                            // To keep UI smooth, we use the pre-calculated ones if remap is 0..1.
+
                             if adj.remap_min == 0.0 && adj.remap_max == 1.0 {
                                 low_count = img.histograms.low_clips;
                                 high_count = img.histograms.high_clips;
                             } else {
-                                // Dynamic clipping re-calculation (surgical)
                                 for chunk in img.rgba.chunks_exact(4) {
                                     for i in 0..3 {
                                         if chunk[i] < adj.remap_min { low_count[i] += 1; }
@@ -826,22 +780,23 @@ impl RivettApp {
                                     let pct = (max_c as f32 / total * 100.0).max(0.1);
                                     let color = if pct > 1.0 { egui::Color32::from_rgb(255, 50, 50) } else { egui::Color32::from_rgb(255, 200, 0) };
                                     ui.painter().rect_filled(side_rect, 0.0, color);
-                                    
-                                    ui.interact(side_rect, egui::Id::new(label), egui::Sense::hover()).on_hover_ui(|ui| {
-                                        ui.label(egui::RichText::new(format!("{} clipping", label)).strong());
-                                        ui.label(format!("  {} pixels total ({:.1}%)", max_c, max_c as f32 / total * 100.0));
-                                        let channels = ["red", "green", "blue"];
-                                        for i in 0..3 {
-                                            ui.label(format!("  {} {} ({:.1}%)", counts[i], channels[i], counts[i] as f32 / total * 100.0));
-                                        }
-                                    });
+                                    let resp = ui.interact(side_rect, egui::Id::new(label), egui::Sense::hover());
+                                    if resp.hovered() {
+                                        egui::show_tooltip_at_pointer(ui.ctx(), ui.layer_id(), egui::Id::new(label).with("tip"), |ui: &mut egui::Ui| {
+                                            ui.label(egui::RichText::new(format!("{} clipping", label)).strong());
+                                            ui.label(format!("  {} pixels total ({:.1}%)", max_c, max_c as f32 / total * 100.0));
+                                            let channels = ["red", "green", "blue"];
+                                            for i in 0..3 {
+                                                ui.label(format!("  {} {} ({:.1}%)", counts[i], channels[i], counts[i] as f32 / total * 100.0));
+                                            }
+                                        });
+                                    }
                                 }
                             };
 
                             draw_clip_bar(ui, egui::Rect::from_min_max(rect.left_top(), egui::pos2(rect.left() + bar_w, hist_rect.bottom())), low_count, "Shadow");
                             draw_clip_bar(ui, egui::Rect::from_min_max(egui::pos2(rect.right() - bar_w, rect.top()), egui::pos2(rect.right(), hist_rect.bottom())), high_count, "Highlight");
 
-                            // --- Paint Channels ---
                             let paint_channel = |ui: &mut egui::Ui, bins: &[f32], color: egui::Color32| {
                                 if bins.is_empty() { return; }
                                 let bin_width = hist_rect.width() / bins.len() as f32;
@@ -860,11 +815,6 @@ impl RivettApp {
                             paint_channel(ui, &img.histograms.g, egui::Color32::from_rgba_unmultiplied(50, 255, 50, 180));
                             paint_channel(ui, &img.histograms.b, egui::Color32::from_rgba_unmultiplied(50, 50, 255, 180));
 
-                            // --- Handles (HDR only) ---
-                            // Black/white point remapping is only meaningful for images
-                            // with genuine HDR data (EXR, RAW). Hide the handles entirely
-                            // for standard 8-bit images so they can't be dragged to a
-                            // broken state.
                             if img.is_hdr {
                                 let to_x = |val: f32| hist_rect.min.x + val.clamp(0.0, 1.0) * hist_rect.width();
                                 let from_x = |x: f32| (x - hist_rect.min.x) / hist_rect.width();
@@ -875,7 +825,7 @@ impl RivettApp {
                                 let handle_w = 8.0;
                                 let draw_handle = |ui: &mut egui::Ui, x: f32, id: &str| {
                                     let h_rect = egui::Rect::from_center_size(egui::pos2(x, hist_rect.bottom() + 8.0), egui::vec2(handle_w, 16.0));
-                                    let res = ui.interact(h_rect, egui::Id::new(id), egui::Sense::drag());
+                                    let res = ui.interact(h_rect, egui::Id::new(id), egui::Sense::click_and_drag());
                                     let color = if res.dragged() || res.hovered() { egui::Color32::WHITE } else { egui::Color32::from_gray(180) };
                                     ui.painter().rect_filled(h_rect, 1.0, color);
                                     ui.painter().line_segment([egui::pos2(x, hist_rect.top()), egui::pos2(x, hist_rect.bottom())], egui::Stroke::new(1.0, color.gamma_multiply(0.5)));
@@ -885,16 +835,21 @@ impl RivettApp {
                                 let res_min = draw_handle(ui, min_x, "min_handle");
                                 let res_max = draw_handle(ui, max_x, "max_handle");
 
-                                if res_min.dragged() {
+                                if res_min.double_clicked() {
+                                    adj.remap_min = 0.0;
+                                    changed = true;
+                                } else if res_min.dragged() {
                                     adj.remap_min = from_x(min_x + res_min.drag_delta().x);
                                     changed = true;
                                 }
-                                if res_max.dragged() {
+                                if res_max.double_clicked() {
+                                    adj.remap_max = 1.0;
+                                    changed = true;
+                                } else if res_max.dragged() {
                                     adj.remap_max = from_x(max_x + res_max.drag_delta().x);
                                     changed = true;
                                 }
 
-                                // Moving both
                                 if response.dragged() && !res_min.dragged() && !res_max.dragged() {
                                     let delta = from_x(hist_rect.min.x + response.drag_delta().x) - from_x(hist_rect.min.x);
                                     adj.remap_min += delta;
@@ -902,14 +857,60 @@ impl RivettApp {
                                     changed = true;
                                 }
 
-                                ui.add_space(10.0);
+                                // Black/white point inputs: left-aligned min, right-aligned max
+                                ui.add_space(2.0);
                                 ui.horizontal(|ui| {
-                                    ui.label("Black:");
-                                    if ui.add(egui::DragValue::new(&mut adj.remap_min).speed(0.005)).changed() { changed = true; }
-                                    ui.label("White:");
-                                    if ui.add(egui::DragValue::new(&mut adj.remap_max).speed(0.005)).changed() { changed = true; }
+                                    let r_min = ui.add(egui::DragValue::new(&mut adj.remap_min).speed(0.005))
+                                        .on_hover_text("Black point");
+                                    if r_min.changed() { changed = true; }
+                                    if r_min.double_clicked() { adj.remap_min = 0.0; changed = true; }
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        let r_max = ui.add(egui::DragValue::new(&mut adj.remap_max).speed(0.005))
+                                            .on_hover_text("White point");
+                                        if r_max.changed() { changed = true; }
+                                        if r_max.double_clicked() { adj.remap_max = 1.0; changed = true; }
+                                    });
                                 });
                             }
+                        }
+
+                        // Exposure — label above, DragValue + growing slider below
+                        ui.label("Exposure");
+                        ui.horizontal(|ui| {
+                            let drag_speed = if shift_held { 0.5 } else { 0.05 };
+                            let r_dv = ui.add(egui::DragValue::new(&mut adj.exposure)
+                                .speed(drag_speed)
+                                .custom_formatter(|n, _| format!("{:+.2}", n))
+                                .custom_parser(|s| s.trim_start_matches('+').parse::<f64>().ok()));
+                            if r_dv.changed() { changed = true; }
+                            let remaining = (ui.available_width() - ui.spacing().item_spacing.x).max(0.0);
+                            ui.style_mut().spacing.slider_width = remaining;
+                            let r_sl = ui.add(egui::Slider::new(&mut adj.exposure, -4.0..=4.0).show_value(false));
+                            if r_sl.changed() { changed = true; }
+                            // Slider uses drag sense internally; overlay a click sense to catch double-click
+                            if ui.interact(r_sl.rect, egui::Id::new("exp_slider_dc"), egui::Sense::click()).double_clicked() {
+                                adj.exposure = 0.0;
+                                changed = true;
+                            }
+                        });
+
+                        // Gamma — same pattern
+                        ui.label("Gamma");
+                        ui.horizontal(|ui| {
+                            let r_dv = ui.add(egui::DragValue::new(&mut adj.gamma).speed(0.01));
+                            if r_dv.changed() { changed = true; }
+                            let remaining = (ui.available_width() - ui.spacing().item_spacing.x).max(0.0);
+                            ui.style_mut().spacing.slider_width = remaining;
+                            let r_sl = ui.add(egui::Slider::new(&mut adj.gamma, 0.1..=4.0).show_value(false));
+                            if r_sl.changed() { changed = true; }
+                            if ui.interact(r_sl.rect, egui::Id::new("gamma_slider_dc"), egui::Sense::click()).double_clicked() {
+                                adj.gamma = 1.0;
+                                changed = true;
+                            }
+                        });
+
+                        if changed && shift_held {
+                            adj.exposure = (adj.exposure * 2.0).round() / 2.0;
                         }
 
                         if changed {
@@ -919,18 +920,6 @@ impl RivettApp {
                             self.viewer.remap_min = adj.remap_min;
                             self.viewer.remap_max = adj.remap_max;
                         }
-
-                        ui.separator();
-                        ui.heading("Rating");
-
-                        let rating = self.current_record.as_ref()
-                            .and_then(|r| r.rating);
-
-                        let stars = match rating {
-                            None    => "— (unrated)".to_string(),
-                            Some(r) => format!("{} ({})", "★".repeat(r as usize), r),
-                        };
-                        label_kv(ui, "Rating", stars);
 
                         if let Some(ref rec) = self.current_record {
                             if let Some(ref note) = rec.note {
