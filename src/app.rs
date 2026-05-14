@@ -397,8 +397,16 @@ impl RivettApp {
                 break 'img drag::Image::File(path.clone());
             };
             let thumb = image::imageops::thumbnail(&src, 128, 128);
+            // Centre the thumbnail on a 128×128 transparent canvas.
+            // Use replace (not overlay) — no alpha compositing, direct pixel copy.
+            let tw = thumb.width();
+            let th = thumb.height();
+            let ox = 128u32.saturating_sub(tw) / 2;
+            let oy = 128u32.saturating_sub(th) / 2;
+            let mut canvas = image::RgbaImage::new(128, 128);
+            image::imageops::replace(&mut canvas, &thumb, ox as i64, oy as i64);
             let mut png = Vec::new();
-            if image::DynamicImage::ImageRgba8(thumb)
+            if image::DynamicImage::ImageRgba8(canvas)
                 .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
                 .is_ok()
             {
