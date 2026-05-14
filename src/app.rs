@@ -513,6 +513,7 @@ impl RivettApp {
 
     fn handle_keyboard(&mut self, ctx: &Context) {
         let input = ctx.input(|i| i.clone());
+        let widget_focused = ctx.memory(|m| m.focused().is_some());
 
         if input.key_pressed(Key::Escape) {
             if self.delete_confirm.is_some() {
@@ -520,6 +521,8 @@ impl RivettApp {
                 self.toast("Delete cancelled", ToastKind::General);
             }
         }
+
+        if widget_focused { return; }
 
         let shift = input.modifiers.shift;
         let preserve_zoom = shift;
@@ -784,9 +787,13 @@ impl RivettApp {
                             ui.heading("Histogram");
                             
                             let hist_height = 80.0;
+                            let bar_w = 6.0;
                             let (rect, response) = ui.allocate_at_least(egui::vec2(ui.available_width(), hist_height + 20.0), egui::Sense::drag());
-                            let hist_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), hist_height));
-                            
+                            let hist_rect = egui::Rect::from_min_max(
+                                egui::pos2(rect.min.x + bar_w, rect.min.y),
+                                egui::pos2(rect.max.x - bar_w, rect.min.y + hist_height),
+                            );
+
                             ui.painter().rect_filled(hist_rect, 2.0, egui::Color32::from_gray(30));
 
                             // --- Clipping logic ---
@@ -831,9 +838,8 @@ impl RivettApp {
                                 }
                             };
 
-                            let bar_w = 6.0;
-                            draw_clip_bar(ui, egui::Rect::from_min_max(hist_rect.left_top(), egui::pos2(hist_rect.left() + bar_w, hist_rect.bottom())), low_count, "Shadow");
-                            draw_clip_bar(ui, egui::Rect::from_min_max(egui::pos2(hist_rect.right() - bar_w, hist_rect.top()), hist_rect.right_bottom()), high_count, "Highlight");
+                            draw_clip_bar(ui, egui::Rect::from_min_max(rect.left_top(), egui::pos2(rect.left() + bar_w, hist_rect.bottom())), low_count, "Shadow");
+                            draw_clip_bar(ui, egui::Rect::from_min_max(egui::pos2(rect.right() - bar_w, rect.top()), egui::pos2(rect.right(), hist_rect.bottom())), high_count, "Highlight");
 
                             // --- Paint Channels ---
                             let paint_channel = |ui: &mut egui::Ui, bins: &[f32], color: egui::Color32| {
