@@ -952,7 +952,10 @@ impl RivettApp {
                                         egui::RichText::new(&entry.key).strong()
                                     )
                                     .id_source(egui::Id::new(&entry.key))
-                                    .default_open(is_multiline && entry.key.to_lowercase() == "parameters")
+                                    .default_open(is_multiline && matches!(
+                                        entry.key.to_lowercase().as_str(),
+                                        "parameters" | "prompt" | "negative prompt"
+                                    ))
                                     .show(ui, |ui| {
                                         ui.add(
                                             egui::TextEdit::multiline(

@@ -26,7 +26,7 @@ pub fn read_metadata(path: &Path) -> Vec<MetaEntry> {
     let Ok(file) = File::open(path) else { return vec![] };
     let reader = BufReader::new(file);
     let img_reader = image::ImageReader::new(reader).with_guessed_format();
-    
+
     let mut entries = if let Ok(reader) = img_reader {
         match reader.format() {
             Some(image::ImageFormat::Png)  => read_png(path),
@@ -40,6 +40,7 @@ pub fn read_metadata(path: &Path) -> Vec<MetaEntry> {
     };
 
     post_process_metadata(&mut entries);
+    inject_ai_prompts(&mut entries);
 
     entries
 }
@@ -56,6 +57,133 @@ fn post_process_metadata(entries: &mut Vec<MetaEntry>) {
             }
         }
     }
+}
+
+/// Scan entries for known AI-generation metadata patterns and prepend
+/// top-level "Prompt" / "Negative Prompt" entries so they appear first
+/// in the panel.  The original entries are left in place so no detail
+/// is lost.
+fn inject_ai_prompts(entries: &mut Vec<MetaEntry>) {
+    let Some((positive, negative)) = extract_ai_prompt(entries) else { return };
+
+    let mut inserts: Vec<MetaEntry> = Vec::new();
+    inserts.push(MetaEntry { key: "Prompt".to_string(),          value: positive, is_header: false });
+    if let Some(neg) = negative {
+        inserts.push(MetaEntry { key: "Negative Prompt".to_string(), value: neg,      is_header: false });
+    }
+    // Prepend so they appear before all other metadata.
+    for (i, entry) in inserts.into_iter().enumerate() {
+        entries.insert(i, entry);
+    }
+}
+
+/// Try to find a human-readable prompt in the metadata entries.
+/// Returns `(positive, Option<negative>)` on success.
+fn extract_ai_prompt(entries: &[MetaEntry]) -> Option<(String, Option<String>)> {
+    // A1111 / AUTOMATIC1111: plain-text "parameters" chunk.
+    if let Some(e) = entries.iter().find(|e| e.key == "parameters") {
+        if let Some(result) = extract_a1111_prompt(&e.value) {
+            return Some(result);
+        }
+    }
+
+    // ComfyUI: "prompt" chunk that contains a JSON node-graph.
+    if let Some(e) = entries.iter().find(|e| e.key == "prompt") {
+        if e.value.trim().starts_with('{') {
+            if let Some(result) = extract_comfyui_prompt(&e.value) {
+                return Some(result);
+            }
+        }
+    }
+
+    // MidJourney / generic: a "Description" entry that was surfaced from
+    // the ImageDescription EXIF tag — just reuse it directly.
+    if let Some(e) = entries.iter().find(|e| e.key == "Description") {
+        if !e.value.is_empty() {
+            return Some((e.value.clone(), None));
+        }
+    }
+
+    None
+}
+
+/// Extract positive (and optional negative) prompt from an A1111-style
+/// `parameters` text block.
+fn extract_a1111_prompt(params: &str) -> Option<(String, Option<String>)> {
+    let neg_marker = "Negative prompt:";
+
+    if let Some(neg_pos) = params.find(neg_marker) {
+        let positive = params[..neg_pos].trim().to_string();
+        let after_neg = &params[neg_pos + neg_marker.len()..];
+        // Negative prompt ends at the first settings line ("Steps:", "Model:", etc.)
+        let neg_end = after_neg
+            .lines()
+            .position(|l| {
+                let t = l.trim_start();
+                t.starts_with("Steps:") || t.starts_with("Model:") || t.starts_with("Sampler:")
+            })
+            .map(|i| after_neg.lines().take(i).map(|l| l.len() + 1).sum::<usize>())
+            .unwrap_or(after_neg.len());
+        let negative = after_neg[..neg_end].trim().to_string();
+        if positive.is_empty() { return None; }
+        Some((positive, if negative.is_empty() { None } else { Some(negative) }))
+    } else {
+        // No negative prompt — find where settings begin and take everything before.
+        let settings_pos = params
+            .lines()
+            .position(|l| {
+                let t = l.trim_start();
+                t.starts_with("Steps:") || t.starts_with("Model:") || t.starts_with("Sampler:")
+            })
+            .map(|i| params.lines().take(i).map(|l| l.len() + 1).sum::<usize>())
+            .unwrap_or(params.len());
+        let positive = params[..settings_pos].trim().to_string();
+        if positive.is_empty() { None } else { Some((positive, None)) }
+    }
+}
+
+/// Extract positive (and optional negative) prompt from a ComfyUI
+/// `prompt` JSON node-graph.  Looks for `CLIPTextEncode` nodes and
+/// uses the `_meta.title` hint to distinguish positive from negative.
+fn extract_comfyui_prompt(json_str: &str) -> Option<(String, Option<String>)> {
+    let val: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    let obj = val.as_object()?;
+
+    let mut positives: Vec<String> = Vec::new();
+    let mut negatives: Vec<String> = Vec::new();
+
+    for (_id, node) in obj {
+        if node.get("class_type").and_then(|v| v.as_str()) != Some("CLIPTextEncode") {
+            continue;
+        }
+        let text = node
+            .get("inputs")
+            .and_then(|i| i.get("text"))
+            .and_then(|t| t.as_str())
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string();
+        if text.is_empty() { continue; }
+
+        let title = node
+            .get("_meta")
+            .and_then(|m| m.get("title"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        if title.contains("negative") {
+            negatives.push(text);
+        } else {
+            positives.push(text);
+        }
+    }
+
+    if positives.is_empty() { return None; }
+
+    let positive = positives.join("\n\n");
+    let negative = if negatives.is_empty() { None } else { Some(negatives.join("\n\n")) };
+    Some((positive, negative))
 }
 
 fn read_exif_with_fallback(path: &Path) -> Vec<MetaEntry> {
@@ -216,7 +344,18 @@ fn read_exif(path: &Path) -> Vec<MetaEntry> {
     ];
 
     // Curated Main Metadata
-    
+
+    // Description / prompt (ImageDescription = tag 0x010E).
+    // MidJourney stores the full prompt here; other tools use it as a caption.
+    // Surfacing it early means inject_ai_prompts() can pick it up as "Description"
+    // and promote it to a top-level "Prompt" entry automatically.
+    if let Some(f) = map.get(&Tag::ImageDescription) {
+        let val = f.display_value().to_string();
+        if !val.is_empty() {
+            main_entries.push(MetaEntry { key: "Description".to_string(), value: val, is_header: false });
+        }
+    }
+
     // Identity
     let make = map.get(&Tag::Make).map(|f| f.display_value().to_string());
     let model = map.get(&Tag::Model).map(|f| f.display_value().to_string());
@@ -299,6 +438,7 @@ fn read_exif(path: &Path) -> Vec<MetaEntry> {
 
     // Remaining non-blocklisted tags
     let handled_tags: Vec<Tag> = vec![
+        Tag::ImageDescription,
         Tag::Make, Tag::Model, Tag::DateTimeOriginal, Tag::OffsetTimeOriginal, Tag::SubSecTimeOriginal,
         Tag::Software, Tag::FNumber, Tag::ExposureTime, Tag::PhotographicSensitivity, Tag::FocalLength,
         Tag::GPSLatitude, Tag::GPSLatitudeRef, Tag::GPSLongitude, Tag::GPSLongitudeRef,
