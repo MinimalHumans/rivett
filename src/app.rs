@@ -44,6 +44,7 @@ pub struct RivettApp {
     current_record:  Option<ImageRecord>,
     metadata:        Vec<MetaEntry>,
     show_info_panel: bool,
+    show_help:       bool,
     toast:           Option<Toast>,
     delete_confirm:  Option<DeleteConfirm>,
 
@@ -90,6 +91,7 @@ impl RivettApp {
             current_record:  None,
             metadata:        vec![],
             show_info_panel: settings.show_info_panel,
+            show_help:       false,
             toast:           None,
             delete_confirm:  None,
             pending_drag_out:     false,
@@ -561,6 +563,10 @@ impl RivettApp {
         let widget_focused = ctx.memory(|m| m.focused().is_some());
 
         if input.key_pressed(Key::Escape) {
+            if self.show_help {
+                self.show_help = false;
+                return;
+            }
             if self.delete_confirm.is_some() {
                 self.delete_confirm = None;
                 self.toast("Delete cancelled", ToastKind::General);
@@ -568,6 +574,12 @@ impl RivettApp {
         }
 
         if widget_focused { return; }
+
+        let typed_question_mark = input.events.iter().any(|e| matches!(e, egui::Event::Text(t) if t == "?"));
+        if typed_question_mark {
+            self.show_help = !self.show_help;
+            return;
+        }
 
         let shift = input.modifiers.shift;
         let preserve_zoom = shift;
@@ -698,6 +710,78 @@ impl RivettApp {
         if !should_close {
             self.save_as_state = Some(state);
         }
+    }
+
+    fn draw_help_overlay(&mut self, ctx: &Context) {
+        if !self.show_help { return; }
+
+        let mut open = true;
+        egui::Window::new("Keyboard Shortcuts")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.screen_rect().center())
+            .show(ctx, |ui| {
+                let row = |ui: &mut egui::Ui, key: &str, desc: &str| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new(key).monospace().strong());
+                    });
+                    ui.label(desc);
+                    ui.end_row();
+                };
+                let section = |ui: &mut egui::Ui, title: &str| {
+                    ui.label(egui::RichText::new(title).small().color(egui::Color32::from_gray(140)));
+                    ui.label("");
+                    ui.end_row();
+                };
+
+                egui::Grid::new("help_grid")
+                    .num_columns(2)
+                    .spacing([16.0, 3.0])
+                    .show(ui, |ui| {
+                        section(ui, "NAVIGATION");
+                        row(ui, "→",            "Next image");
+                        row(ui, "←",            "Previous image");
+                        row(ui, "↓  /  Page Down", "Jump forward 10");
+                        row(ui, "↑  /  Page Up",   "Jump back 10");
+                        row(ui, "Home",          "First image");
+                        row(ui, "End",           "Last image");
+                        row(ui, "Alt+↑",         "Open parent directory");
+                        row(ui, "Shift + navigate", "Preserve zoom");
+
+                        ui.label(""); ui.label(""); ui.end_row();
+                        section(ui, "VIEW");
+                        row(ui, "F",  "Toggle fit / actual size");
+                        row(ui, "I",  "Toggle info panel");
+                        row(ui, "?",  "Show / hide this help");
+
+                        ui.label(""); ui.label(""); ui.end_row();
+                        section(ui, "RATING");
+                        row(ui, "1 – 5", "Set star rating");
+                        row(ui, "0",     "Clear rating");
+
+                        ui.label(""); ui.label(""); ui.end_row();
+                        section(ui, "ADJUSTMENTS");
+                        row(ui, "[",  "Rotate counter-clockwise");
+                        row(ui, "]",  "Rotate clockwise");
+
+                        ui.label(""); ui.label(""); ui.end_row();
+                        section(ui, "FILE MANAGEMENT");
+                        row(ui, "H  /  Alt+H", "Hide / ignore image");
+                        row(ui, "Delete × 2",  "Move to trash (confirm within 4 s)");
+                        row(ui, "Escape",       "Cancel delete");
+                        row(ui, "M (menu only)", "Queue metadata strip");
+
+                        ui.label(""); ui.label(""); ui.end_row();
+                        section(ui, "SAVE & REFRESH");
+                        row(ui, "Ctrl+S",       "Save changes in place");
+                        row(ui, "Ctrl+Shift+S", "Save As");
+                        row(ui, "Ctrl+R",       "Soft refresh");
+                        row(ui, "Ctrl+Shift+R", "Hard refresh");
+                    });
+            });
+        if !open { self.show_help = false; }
     }
 
     fn perform_save_as(&mut self, state: &SaveAsState) {
@@ -1544,6 +1628,7 @@ impl eframe::App for RivettApp {
         }
 
         self.draw_save_as_modal(ctx);
+        self.draw_help_overlay(ctx);
 
         CentralPanel::default().show(ctx, |ui| {
             let canvas = ui.max_rect();
@@ -1594,12 +1679,6 @@ impl eframe::App for RivettApp {
                 }
             }
 
-            if response.clicked() && self.viewer.load_error.is_some() {
-                if let Some(ref err) = self.viewer.load_error {
-                    ctx.copy_text(err.clone());
-                    self.toast("Error message copied to clipboard", ToastKind::General);
-                }
-            }
 
             self.draw_context_menu(&response, ctx);
 

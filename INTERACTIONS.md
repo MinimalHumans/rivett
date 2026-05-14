@@ -23,6 +23,7 @@
 |-----|--------|
 | `F` | Toggle fit-to-window / actual size (100%) |
 | `I` | Toggle info panel |
+| `?` | Show / hide keyboard shortcut help |
 
 ### Rating
 
@@ -42,7 +43,7 @@
 
 | Key | Action |
 |-----|--------|
-| `H` | Hide / ignore current image |
+| `H` / `Alt+H` | Hide / ignore current image |
 | `Delete` (first press) | Arm delete — opens a 4-second confirm window |
 | `Delete` (second press, within 4 s) | Move to trash |
 | `Escape` | Cancel armed delete |
@@ -68,7 +69,6 @@
 | **Pinch gesture** (trackpad) | Smooth zoom centered on cursor |
 | **Double-click** | Open file picker |
 | **Double-click** (on load error) | Copy error message to clipboard |
-| **Single-click** (on load error) | Copy error message to clipboard |
 | **Right-click** | Context menu (all actions with shortcut hints, includes "Strip metadata" action) |
 | **Drop file onto window** | Open dropped image |
 
