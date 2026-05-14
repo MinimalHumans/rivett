@@ -779,14 +779,6 @@ impl RivettApp {
                             changed = true;
                         }
 
-                        if changed {
-                            self.session.set_adjustments(path.clone(), adj);
-                            self.viewer.exposure = adj.exposure;
-                            self.viewer.gamma    = adj.gamma;
-                            self.viewer.remap_min = adj.remap_min;
-                            self.viewer.remap_max = adj.remap_max;
-                        }
-
                         if let Some(img) = self.image_cache.get(&path) {
                             ui.separator();
                             ui.heading("Histogram");
@@ -912,6 +904,14 @@ impl RivettApp {
                                     if ui.add(egui::DragValue::new(&mut adj.remap_max).speed(0.005)).changed() { changed = true; }
                                 });
                             }
+                        }
+
+                        if changed {
+                            self.session.set_adjustments(path.clone(), adj);
+                            self.viewer.exposure = adj.exposure;
+                            self.viewer.gamma    = adj.gamma;
+                            self.viewer.remap_min = adj.remap_min;
+                            self.viewer.remap_max = adj.remap_max;
                         }
 
                         ui.separator();
