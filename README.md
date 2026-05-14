@@ -1,57 +1,33 @@
 # <img src="resources/icon.png" width="48" height="48" valign="middle"> Rivett
 
-Rivett is a high-performance image viewer designed for sorting and vetting large volumes of images. It focuses on speed and a keyboard-driven workflow, making it suitable for photographers and digital artists.
+Rivett is a fast, keyboard-driven image viewer for sorting and vetting large collections. Built for photographers and digital artists who need to move quickly through images without the interface getting in the way.
 
 ## Features
 
 - **Performance:** Built with Rust and OpenGL for smooth panning and zooming, even with large files.
-- **Format Support:** Standard web formats, high-dynamic-range imagery (EXR), vector graphics (SVG), and professional Camera RAW formats (.CR3, .ARW, .NEF, etc.) via LibRaw.
-- **Windows Integration:** Includes an MSI installer that sets up a native "Open with Rivett" context menu and file associations.
-- **Minimalist UI:** Interface designed to stay out of the way, with an optional panel for metadata and EXIF inspection.
+- **32-bit / HDR Imaging:** Full 32-bit float pipeline with hardware-accelerated gamma, exposure, and black/white point controls. Histogram remap handles and clipping indicators are available for HDR images (EXR, RAW).
+- **Format Support:** Standard web formats, OpenEXR, SVG, and professional Camera RAW formats (.CR3, .ARW, .NEF, .RAF, .DNG, and more) via LibRaw.
+- **AI Metadata:** Prompts from ComfyUI, Stable Diffusion (A1111), and MidJourney are surfaced at the top of the metadata panel rather than buried in raw JSON.
+- **Minimalist UI:** Optional info panel for metadata, EXIF, ratings, and histogram. All controls are documented in the in-app help menu (`?`).
+- **Windows Integration:** MSI installer with a native "Open with Rivett" context menu and file associations.
 
 ## Installation
 
-Professional installers are available for most platforms:
+Installers are available on the [Releases](https://github.com/krets/rivett/releases) page.
 
-1.  Visit the [Releases](https://github.com/krets/rivett/releases) page.
-2.  **Windows:** Download the `.msi` installer.
-3.  **Linux:** Download the `.AppImage` or `.deb` package.
-4.  **macOS:** Download the `.app` bundle.
+- **Windows:** `.msi` installer
+- **Linux:** `.AppImage` or `.deb`
+- **macOS:** `.app` bundle
 
-## User Guide
+## Controls
 
-Rivett is optimized for keyboard use, though it supports mouse interaction for inspection and navigation.
-
-### Navigation
-- **Left / Right**: Previous / Next image (resets zoom to fit).
-- **Shift + Arrow**: Navigate while preserving the current zoom and pan position.
-- **PageUp / PageDown**: Move quickly through a collection.
-
-### Zoom & Pan
-- **Scroll Wheel**: Zoom in and out at the cursor position.
-- **Left Click + Drag**: Pan the image.
-- **F**: Toggle "Fit to Window".
-- **Ctrl + 0**: Zoom to actual size (1:1 pixels).
-- **Arrow Up / Down**: Incremental zoom via keyboard.
-
-### Vetting
-- **1 - 5**: Set image rating.
-- **0**: Clear rating.
-- **[ / ]**: Rotate image 90° (saved to the local database).
-- **Delete**: Delete the current file (requires two-step confirmation).
-- **H**: Hide the image from the current session.
-
-### Tools
-- **I**: Toggle the metadata info panel.
-- **Right Click**: Open the context menu for all options.
-- **Ctrl + Shift + R**: Reset session (clears filters and temporary session state).
-- **Error Handling**: If a file fails to load, click the error message in the viewport to copy it to the clipboard.
+All hotkeys and mouse interactions are listed in the in-app help menu. Open it with `?` or via the right-click context menu.
 
 ## Supported Formats
 
-- **Standard:** PNG, JPEG, WebP, BMP, GIF
+- **Standard:** PNG, JPEG, WebP, BMP, GIF, TIFF
 - **Production:** OpenEXR (.exr), SVG
-- **Camera RAW:** Canon (.CR2, .CR3), Sony (.ARW), Nikon (.NEF), Fujifilm (.RAF), Adobe Digital Negative (.DNG), and others supported by LibRaw.
+- **Camera RAW:** Canon (.CR2, .CR3), Sony (.ARW), Nikon (.NEF, .NRW), Fujifilm (.RAF), Olympus (.ORF), Panasonic (.RW2), Adobe Digital Negative (.DNG), and others via LibRaw
 
 ## License
 
