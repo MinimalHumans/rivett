@@ -16,6 +16,7 @@ use crate::session::{SessionState, Rotation, RatingFilter, RatingFilterOp};
 use crate::settings::AppSettings;
 use crate::viewer::ViewerState;
 use crate::renderer::GammaRenderer;
+use crate::utilities::UtilitiesState;
 use std::sync::{Arc, Mutex};
 use egui_glow::glow;
 
@@ -53,6 +54,9 @@ pub struct RivettApp {
 
     // Save As state
     save_as_state:   Option<SaveAsState>,
+
+    // Utility windows
+    utilities:       UtilitiesState,
 
     #[allow(dead_code)]
     settings:        AppSettings,
@@ -96,6 +100,7 @@ impl RivettApp {
             delete_confirm:  None,
             pending_drag_out:     false,
             save_as_state:   None,
+            utilities:       UtilitiesState::default(),
             settings,
         };
 
@@ -1323,6 +1328,33 @@ impl RivettApp {
 
             ui.separator();
 
+            ui.menu_button("Utilities", |ui| {
+                let base_path = self.listing
+                    .as_ref()
+                    .map(|l| l.dir_path.clone())
+                    .or_else(|| self.current_path.as_ref().and_then(|p| p.parent()).map(|p| p.to_path_buf()))
+                    .unwrap_or_default();
+                let has_path = !base_path.as_os_str().is_empty();
+
+                if ui.add_enabled(has_path, egui::Button::new("File System Purge…"))
+                    .on_hover_text("Delete files by rating within the current directory")
+                    .clicked()
+                {
+                    self.utilities.open_purge(base_path);
+                    ui.close_menu();
+                }
+
+                if ui.add_enabled(self.db.is_some(), egui::Button::new("Database Health Check…"))
+                    .on_hover_text("Find and remove database entries for missing files")
+                    .clicked()
+                {
+                    self.utilities.open_db_health(self.db.as_ref());
+                    ui.close_menu();
+                }
+            });
+
+            ui.separator();
+
             ui.vertical_centered(|ui| {
                 ui.add_space(2.0);
                 ui.label(egui::RichText::new(format!("Rivett v{}", env!("CARGO_PKG_VERSION")))
@@ -1628,6 +1660,7 @@ impl eframe::App for RivettApp {
         }
 
         self.draw_save_as_modal(ctx);
+        self.utilities.draw(ctx, self.db.as_ref());
         self.draw_help_overlay(ctx);
 
         CentralPanel::default().show(ctx, |ui| {

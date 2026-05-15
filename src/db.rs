@@ -361,6 +361,35 @@ impl Database {
         result
     }
 
+    // ── Utility queries ──────────────────────────────────────────────────
+
+    /// Total number of image records across all directories.
+    pub fn count_all_entries(&self) -> Result<usize> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM images", [], |row| row.get(0)
+        )?;
+        Ok(n as usize)
+    }
+
+    /// All image records joined with their directory path, for utility scans.
+    /// Returns `(dir_id, dir_path, filename, rating)`.
+    pub fn get_all_image_paths(&self) -> Result<Vec<(i64, String, String, Option<u8>)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT i.directory_id, d.path, i.filename, i.rating
+             FROM images i JOIN directories d ON i.directory_id = d.id
+             ORDER BY d.path, i.filename",
+        )?;
+        let result: Result<Vec<_>> = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<i64>>(3)?.map(|r| r as u8),
+            ))
+        })?.collect();
+        result
+    }
+
     // ── Settings ─────────────────────────────────────────────────────────
 
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {

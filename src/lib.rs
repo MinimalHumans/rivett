@@ -7,3 +7,4 @@ pub mod db;
 pub mod viewer;
 pub mod renderer;
 pub mod app;
+pub mod utilities;
