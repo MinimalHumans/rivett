@@ -1,7 +1,7 @@
 //! Utility windows — accessible from the right-click context menu under "Utilities".
 //! No hotkeys; menu-only.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use egui::Context;
 use crate::db::Database;
@@ -43,8 +43,9 @@ impl UtilitiesState {
 
 /// One entry in the condensed path summary shown in the UI.
 pub struct PathEntry {
-    pub path:   String,
-    pub counts: [usize; 6], // [unrated, ★1 … ★5]
+    pub path:     String,
+    pub counts:   [usize; 6], // [unrated, ★1 … ★5]
+    pub excluded: bool,       // true = user has unchecked this path
 }
 
 const SUMMARY_TARGET: usize = 20;
@@ -68,7 +69,7 @@ pub fn summarise_paths(files: &[(PathBuf, usize)]) -> Vec<PathEntry> {
         if map.len() <= SUMMARY_TARGET || trim > 30 {
             let mut out: Vec<PathEntry> = map
                 .into_iter()
-                .map(|(path, counts)| PathEntry { path, counts })
+                .map(|(path, counts)| PathEntry { path, counts, excluded: false })
                 .collect();
             out.sort_by(|a, b| a.path.cmp(&b.path));
             return out;
@@ -95,6 +96,23 @@ fn trim_tail(path: &Path, n: usize) -> String {
     } else {
         p.to_string_lossy().into_owned()
     }
+}
+
+/// Returns `true` if `file_path` falls under any excluded `PathEntry`.
+///
+/// Uses component-level `Path::starts_with` so that a prefix of
+/// `C:\Photos\2024` does not accidentally match `C:\Photos\2024extra`.
+/// Trie-collapsed entries (ending in `/…`) have the suffix stripped before
+/// the comparison.
+fn path_is_excluded(file_path: &Path, summary: &[PathEntry]) -> bool {
+    let dir = match file_path.parent() {
+        Some(p) => p,
+        None    => return false,
+    };
+    summary.iter().filter(|e| e.excluded).any(|e| {
+        let prefix = e.path.trim_end_matches("/…");
+        dir.starts_with(Path::new(prefix))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +178,21 @@ impl PurgeState {
         self.scanned = true;
     }
 
+    /// Count of files in `bucket` that are not under any excluded trie path.
+    fn filtered_count(&self, bucket: usize) -> usize {
+        self.buckets[bucket].iter()
+            .filter(|f| !path_is_excluded(f, &self.summary))
+            .count()
+    }
+
+    /// Non-excluded files in `bucket` — used to populate `PurgeConfirm`.
+    fn files_for_deletion(&self, bucket: usize) -> Vec<PathBuf> {
+        self.buckets[bucket].iter()
+            .filter(|f| !path_is_excluded(f, &self.summary))
+            .cloned()
+            .collect()
+    }
+
     /// Draw the window; returns `false` when the window is closed.
     pub fn draw(&mut self, ctx: &Context, db: Option<&Database>) -> bool {
         let mut open = true;
@@ -191,62 +224,35 @@ impl PurgeState {
                     ui.separator();
                     ui.add_space(4.0);
 
-                    // Counts table
-                    egui::Grid::new("purge_rating_table")
-                        .num_columns(3)
-                        .striped(true)
-                        .spacing([16.0, 4.0])
-                        .show(ui, |ui| {
-                            ui.strong("Rating");
-                            ui.strong("Files");
-                            ui.strong("");
-                            ui.end_row();
+                    // Snapshot filtered counts before any mutable borrow of self.summary.
+                    let filtered: [usize; 6] = std::array::from_fn(|i| self.filtered_count(i));
 
-                            let labels = ["Unrated", "★ 1", "★ 2", "★ 3", "★ 4", "★ 5"];
-                            for (i, label) in labels.iter().enumerate() {
-                                let count = self.buckets[i].len();
-                                ui.label(*label);
-                                ui.label(count.to_string());
-                                if count > 0 {
-                                    let btn = egui::Button::new(
-                                        egui::RichText::new("Delete all…")
-                                            .color(egui::Color32::from_rgb(220, 80, 80))
-                                    );
-                                    if ui.add(btn).on_hover_text(
-                                        format!("Permanently delete {} {} file{}", count, label, if count == 1 { "" } else { "s" })
-                                    ).clicked() {
-                                        self.confirm = Some(PurgeConfirm {
-                                            bucket: i,
-                                            files:  self.buckets[i].clone(),
-                                        });
-                                    }
-                                } else {
-                                    ui.label(egui::RichText::new("—").weak());
-                                }
-                                ui.end_row();
-                            }
-                        });
-
-                    // Directory breakdown (trie summary)
+                    // Directory breakdown with exclusion checkboxes — shown first so the
+                    // user can adjust exclusions before reading the rating counts below.
                     if !self.summary.is_empty() {
-                        ui.add_space(8.0);
-                        ui.separator();
                         ui.strong("Directory breakdown");
+                        ui.label(egui::RichText::new(
+                            "Uncheck paths to exclude them from the deletion pool."
+                        ).small().weak());
                         ui.add_space(4.0);
                         egui::ScrollArea::vertical()
                             .id_source("purge_summary_scroll")
                             .max_height(140.0)
                             .show(ui, |ui| {
                                 egui::Grid::new("purge_dir_summary")
-                                    .num_columns(7)
+                                    .num_columns(8)
                                     .spacing([8.0, 2.0])
                                     .show(ui, |ui| {
+                                        ui.strong("");
                                         ui.strong("Path");
                                         for h in &["∅", "★1", "★2", "★3", "★4", "★5"] {
                                             ui.strong(*h);
                                         }
                                         ui.end_row();
-                                        for entry in &self.summary {
+                                        for entry in &mut self.summary {
+                                            let mut included = !entry.excluded;
+                                            ui.checkbox(&mut included, "");
+                                            entry.excluded = !included;
                                             ui.add(egui::Label::new(
                                                 egui::RichText::new(&entry.path).monospace().small()
                                             ).truncate());
@@ -261,7 +267,46 @@ impl PurgeState {
                                         }
                                     });
                             });
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(4.0);
                     }
+
+                    // Rating counts table — counts reflect only non-excluded paths.
+                    egui::Grid::new("purge_rating_table")
+                        .num_columns(3)
+                        .striped(true)
+                        .spacing([16.0, 4.0])
+                        .show(ui, |ui| {
+                            ui.strong("Rating");
+                            ui.strong("Files");
+                            ui.strong("");
+                            ui.end_row();
+
+                            let labels = ["Unrated", "★ 1", "★ 2", "★ 3", "★ 4", "★ 5"];
+                            for (i, label) in labels.iter().enumerate() {
+                                let count = filtered[i];
+                                ui.label(*label);
+                                ui.label(count.to_string());
+                                if count > 0 {
+                                    let btn = egui::Button::new(
+                                        egui::RichText::new("Delete all…")
+                                            .color(egui::Color32::from_rgb(220, 80, 80))
+                                    );
+                                    if ui.add(btn).on_hover_text(
+                                        format!("Permanently delete {} {} file{}", count, label, if count == 1 { "" } else { "s" })
+                                    ).clicked() {
+                                        self.confirm = Some(PurgeConfirm {
+                                            bucket: i,
+                                            files:  self.files_for_deletion(i),
+                                        });
+                                    }
+                                } else {
+                                    ui.label(egui::RichText::new("—").weak());
+                                }
+                                ui.end_row();
+                            }
+                        });
                 }
 
                 if let Some(ref msg) = self.result {
@@ -338,21 +383,31 @@ impl PurgeState {
     }
 
     fn execute_deletion(&mut self, confirm: PurgeConfirm) {
-        let mut deleted = 0usize;
-        let mut failed  = 0usize;
+        let mut deleted_set: HashSet<PathBuf> = HashSet::new();
+        let mut failed = 0usize;
         for path in &confirm.files {
             match std::fs::remove_file(path) {
-                Ok(())  => deleted += 1,
-                Err(_)  => failed  += 1,
+                Ok(())  => { deleted_set.insert(path.clone()); }
+                Err(_)  => { failed += 1; }
             }
         }
-        self.buckets[confirm.bucket].clear();
+        let deleted = deleted_set.len();
 
-        // Rebuild summary from remaining files
+        // Remove only the successfully deleted files; excluded files in this
+        // bucket remain untouched.
+        self.buckets[confirm.bucket].retain(|f| !deleted_set.contains(f));
+
+        // Rebuild summary from remaining files and re-apply existing excluded flags.
         let flat: Vec<(PathBuf, usize)> = self.buckets.iter().enumerate()
             .flat_map(|(i, files)| files.iter().map(move |f| (f.clone(), i)))
             .collect();
-        self.summary = summarise_paths(&flat);
+        let old_excluded: HashMap<String, bool> = self.summary.iter()
+            .map(|e| (e.path.clone(), e.excluded))
+            .collect();
+        self.summary = summarise_paths(&flat).into_iter().map(|mut e| {
+            if let Some(&ex) = old_excluded.get(&e.path) { e.excluded = ex; }
+            e
+        }).collect();
 
         self.result = Some(format!(
             "Deleted {deleted} file{}{}.",
@@ -367,15 +422,14 @@ impl PurgeState {
 // ---------------------------------------------------------------------------
 
 pub struct DbHealthState {
-    total_entries:    usize,
-    scanned:          bool,
+    total_entries:  usize,
+    scanned:        bool,
     /// (dir_id, dir_path, filename) for each orphaned entry.
-    orphans:          Vec<(i64, String, String)>,
-    selected:         Vec<bool>,
-    excluded:         Vec<String>,
-    prefix_input:     String,
-    confirm_prune:    bool,
-    result:           Option<String>,
+    orphans:        Vec<(i64, String, String)>,
+    /// Trie summary of orphan paths; users uncheck entries to exclude them.
+    summary:        Vec<PathEntry>,
+    confirm_prune:  bool,
+    result:         Option<String>,
 }
 
 impl DbHealthState {
@@ -384,9 +438,7 @@ impl DbHealthState {
             total_entries: total,
             scanned:       false,
             orphans:       vec![],
-            selected:      vec![],
-            excluded:      vec![],
-            prefix_input:  String::new(),
+            summary:       vec![],
             confirm_prune: false,
             result:        None,
         }
@@ -395,46 +447,66 @@ impl DbHealthState {
     fn scan(&mut self, db: &Database) {
         let Ok(entries) = db.get_all_image_paths() else { return };
         self.orphans.clear();
+
         for (dir_id, dir_path, filename, _) in entries {
-            if self.excluded.iter().any(|ex| dir_path.starts_with(ex.as_str())) {
-                continue;
-            }
             let path = PathBuf::from(&dir_path).join(&filename);
             if !path.exists() {
                 self.orphans.push((dir_id, dir_path, filename));
             }
         }
-        self.selected = vec![true; self.orphans.len()];
-        self.scanned  = true;
+
+        // Build trie from orphan directory paths.  Join a dummy filename so
+        // that summarise_paths's parent() call recovers the directory exactly.
+        let flat: Vec<(PathBuf, usize)> = self.orphans.iter()
+            .map(|(_, dir, _)| (PathBuf::from(dir).join("_"), 0usize))
+            .collect();
+        self.summary = summarise_paths(&flat);
+        self.scanned = true;
+    }
+
+    /// Number of orphans not under any excluded trie path.
+    fn candidate_count(&self) -> usize {
+        self.orphans.iter().filter(|(_, dir, fname)| {
+            !path_is_excluded(&PathBuf::from(dir).join(fname), &self.summary)
+        }).count()
     }
 
     fn prune(&mut self, db: &Database) {
         let mut pruned = 0usize;
-        let mut failed  = 0usize;
+        let mut failed = 0usize;
+        let mut keep_orphans: Vec<(i64, String, String)> = Vec::new();
 
-        let mut keep_orphans:   Vec<(i64, String, String)> = Vec::new();
-        let mut keep_selected:  Vec<bool>                  = Vec::new();
-
-        for ((dir_id, dir_path, filename), &sel) in self.orphans.iter().zip(&self.selected) {
-            if sel {
+        for (dir_id, dir_path, filename) in &self.orphans {
+            let file = PathBuf::from(dir_path).join(filename);
+            if path_is_excluded(&file, &self.summary) {
+                keep_orphans.push((*dir_id, dir_path.clone(), filename.clone()));
+            } else {
                 match db.delete_image(*dir_id, filename) {
                     Ok(()) => pruned += 1,
                     Err(_) => {
                         failed += 1;
                         keep_orphans.push((*dir_id, dir_path.clone(), filename.clone()));
-                        keep_selected.push(true);
                     }
                 }
-            } else {
-                keep_orphans.push((*dir_id, dir_path.clone(), filename.clone()));
-                keep_selected.push(false);
             }
         }
 
-        self.orphans          = keep_orphans;
-        self.selected         = keep_selected;
-        self.total_entries    = self.total_entries.saturating_sub(pruned);
-        self.result           = Some(format!(
+        self.orphans       = keep_orphans;
+        self.total_entries = self.total_entries.saturating_sub(pruned);
+
+        // Rebuild trie from remaining orphans, preserving excluded flags.
+        let old_excluded: HashMap<String, bool> = self.summary.iter()
+            .map(|e| (e.path.clone(), e.excluded))
+            .collect();
+        let flat: Vec<(PathBuf, usize)> = self.orphans.iter()
+            .map(|(_, dir, _)| (PathBuf::from(dir).join("_"), 0usize))
+            .collect();
+        self.summary = summarise_paths(&flat).into_iter().map(|mut e| {
+            if let Some(&ex) = old_excluded.get(&e.path) { e.excluded = ex; }
+            e
+        }).collect();
+
+        self.result = Some(format!(
             "Removed {pruned} entr{}{}.",
             if pruned == 1 { "y" } else { "ies" },
             if failed > 0 { format!(", {failed} failed") } else { String::new() },
@@ -454,39 +526,6 @@ impl DbHealthState {
                 ui.label(format!("Total database entries: {}", self.total_entries));
                 ui.add_space(6.0);
 
-                // Exclusion list
-                ui.collapsing("Exclude path prefixes from scan", |ui| {
-                    ui.label(egui::RichText::new(
-                        "Use this to skip network drives or paths that may be temporarily unavailable."
-                    ).small().weak());
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(&mut self.prefix_input)
-                            .hint_text("e.g. /mnt/nas or Z:\\")
-                            .desired_width(300.0));
-                        if ui.button("Add").clicked() {
-                            let trimmed = self.prefix_input.trim().to_string();
-                            if !trimmed.is_empty() && !self.excluded.contains(&trimmed) {
-                                self.excluded.push(trimmed);
-                                self.prefix_input.clear();
-                            }
-                        }
-                    });
-                    ui.add_space(4.0);
-                    let mut to_remove = None;
-                    for (i, prefix) in self.excluded.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.monospace(prefix);
-                            if ui.small_button("✕").clicked() { to_remove = Some(i); }
-                        });
-                    }
-                    if let Some(i) = to_remove { self.excluded.remove(i); }
-                    if self.excluded.is_empty() {
-                        ui.label(egui::RichText::new("No exclusions — all paths will be checked.").small().weak());
-                    }
-                });
-
-                ui.add_space(6.0);
                 if ui.button("Scan for orphans").clicked() {
                     if let Some(db) = db {
                         self.scan(db);
@@ -504,48 +543,65 @@ impl DbHealthState {
                             "✓ No orphaned entries found."
                         ).color(egui::Color32::from_rgb(100, 210, 100)));
                     } else {
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(format!(
-                                "{} orphaned entr{} found:",
-                                self.orphans.len(),
-                                if self.orphans.len() == 1 { "y" } else { "ies" }
-                            )).strong());
-                            let all = self.selected.iter().all(|&s| s);
-                            if ui.small_button(if all { "Deselect all" } else { "Select all" }).clicked() {
-                                let v = !all;
-                                for s in &mut self.selected { *s = v; }
-                            }
-                        });
+                        ui.label(egui::RichText::new(format!(
+                            "{} orphaned entr{} found:",
+                            self.orphans.len(),
+                            if self.orphans.len() == 1 { "y" } else { "ies" }
+                        )).strong());
+                        ui.add_space(4.0);
+
+                        ui.label(egui::RichText::new(
+                            "Uncheck paths to exclude them from pruning (e.g. disconnected network drives)."
+                        ).small().weak());
                         ui.add_space(4.0);
 
                         egui::ScrollArea::vertical()
-                            .id_source("orphan_list_scroll")
-                            .max_height(220.0)
+                            .id_source("orphan_trie_scroll")
+                            .max_height(200.0)
                             .show(ui, |ui| {
-                                for (i, (_, dir, fname)) in self.orphans.iter().enumerate() {
-                                    if let Some(sel) = self.selected.get_mut(i) {
-                                        ui.horizontal(|ui| {
-                                            ui.checkbox(sel, "");
+                                egui::Grid::new("orphan_trie_table")
+                                    .num_columns(3)
+                                    .spacing([8.0, 2.0])
+                                    .show(ui, |ui| {
+                                        ui.strong("");
+                                        ui.strong("Path");
+                                        ui.strong("Orphans");
+                                        ui.end_row();
+                                        for entry in &mut self.summary {
+                                            let mut included = !entry.excluded;
+                                            ui.checkbox(&mut included, "");
+                                            entry.excluded = !included;
                                             ui.add(egui::Label::new(
-                                                egui::RichText::new(
-                                                    format!("{}/{}", dir, fname)
-                                                ).monospace().small()
+                                                egui::RichText::new(&entry.path).monospace().small()
                                             ).truncate());
-                                        });
-                                    }
-                                }
+                                            let count = entry.counts[0];
+                                            if count > 0 {
+                                                ui.label(count.to_string());
+                                            } else {
+                                                ui.label(egui::RichText::new("—").weak());
+                                            }
+                                            ui.end_row();
+                                        }
+                                    });
                             });
 
                         ui.add_space(6.0);
-                        let sel_count = self.selected.iter().filter(|&&s| s).count();
+                        let candidates = self.candidate_count();
+                        ui.label(format!(
+                            "{} candidate{} to remove",
+                            candidates,
+                            if candidates == 1 { "" } else { "s" }
+                        ));
+                        ui.add_space(4.0);
+
                         let prune_btn = egui::Button::new(
                             egui::RichText::new(format!(
-                                "Prune {} selected entr{}…",
-                                sel_count,
-                                if sel_count == 1 { "y" } else { "ies" }
+                                "Prune {} candidate{}…",
+                                candidates,
+                                if candidates == 1 { "" } else { "s" }
                             )).color(egui::Color32::from_rgb(220, 80, 80))
                         );
-                        ui.add_enabled_ui(sel_count > 0, |ui| {
+                        ui.add_enabled_ui(candidates > 0, |ui| {
                             if ui.add(prune_btn).clicked() { self.confirm_prune = true; }
                         });
                     }
@@ -559,7 +615,7 @@ impl DbHealthState {
 
         // Confirmation dialog
         if self.confirm_prune {
-            let sel_count = self.selected.iter().filter(|&&s| s).count();
+            let candidates = self.candidate_count();
             let mut do_prune = false;
             let mut cancel   = false;
 
@@ -570,8 +626,8 @@ impl DbHealthState {
                 .show(ctx, |ui| {
                     ui.label(egui::RichText::new(format!(
                         "Remove {} orphaned database entr{}?",
-                        sel_count,
-                        if sel_count == 1 { "y" } else { "ies" }
+                        candidates,
+                        if candidates == 1 { "y" } else { "ies" }
                     )).strong());
                     ui.add_space(4.0);
                     ui.label(egui::RichText::new(
