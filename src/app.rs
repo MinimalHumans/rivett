@@ -343,14 +343,24 @@ impl RivettApp {
                 path.parent().map(|p| p.to_string_lossy().into_owned()),
                 path.file_name().and_then(|n| n.to_str()).map(str::to_string),
             ) {
-                if let Ok(dir) = db.upsert_directory_by_path(&dir_str) {
-                    let _ = db.set_rating(dir.id, &fname, rating);
-                    self.toast(match rating {
-                        Some(r) => format!("Rated: {} stars", "★".repeat(r as usize)),
-                        None    => "Rating cleared".to_string(),
-                    }, ToastKind::ImageStatus);
-                    self.refresh_record();
+                match db.upsert_directory_by_path(&dir_str) {
+                    Ok(dir) => {
+                        if let Err(e) = db.set_rating(dir.id, &fname, rating) {
+                            self.toast(format!("Database error: {e}"), ToastKind::Error);
+                        } else {
+                            self.toast(match rating {
+                                Some(r) => format!("Rated: {} stars", "★".repeat(r as usize)),
+                                None    => "Rating cleared".to_string(),
+                            }, ToastKind::ImageStatus);
+                            self.refresh_record();
+                        }
+                    }
+                    Err(e) => {
+                        self.toast(format!("Database error: {e}"), ToastKind::Error);
+                    }
                 }
+            } else if self.db.is_none() {
+                self.toast("Database not available", ToastKind::Error);
             }
         }
     }
@@ -484,9 +494,9 @@ impl RivettApp {
         // library compatibility with egui on Linux.
     }
 
-    // ── Save rotation (Ctrl+S) ────────────────────────────────────────────
+    // ── Save changes (Ctrl+S) ───────────────────────────────────────────
 
-    fn save_current_rotation(&mut self, ctx: &Context) {
+    fn save_current_changes(&mut self, ctx: &Context) {
         let Some(path) = self.current_path.clone() else { return };
         let rotation = self.session.rotation_for(&path);
         let strip_metadata = self.session.is_metadata_stripped(&path);
@@ -639,6 +649,11 @@ impl RivettApp {
         }
 
         if input.key_pressed(Key::H) { self.hide_current(ctx); }
+        if input.key_pressed(Key::M) {
+            if let Some(path) = self.current_path.clone() {
+                self.session.toggle_metadata_strip(path);
+            }
+        }
 
         if input.key_pressed(Key::OpenBracket) {
             self.rotate_current(false, ctx);
@@ -687,7 +702,7 @@ impl RivettApp {
         if let Some(output_path) = dialog.save_file() {
             self.save_as_state = Some(SaveAsState {
                 output_path,
-                preserve_metadata: true,
+                preserve_metadata: self.settings.preserve_metadata,
                 focus_requested: false,
             });
         }
@@ -709,7 +724,10 @@ impl RivettApp {
 
                     let has_metadata = self.metadata.iter().any(|m| !m.is_header);
                     if has_metadata {
-                        ui.checkbox(&mut state.preserve_metadata, "Preserve metadata");
+                        if ui.checkbox(&mut state.preserve_metadata, "Preserve metadata").changed() {
+                            self.settings.preserve_metadata = state.preserve_metadata;
+                            let _ = self.settings.save();
+                        }
                         ui.add_space(12.0);
                     } else {
                         state.preserve_metadata = false;
@@ -796,13 +814,13 @@ impl RivettApp {
                         ui.label(""); ui.label(""); ui.end_row();
                         section(ui, "FILE MANAGEMENT");
                         row(ui, "H  /  Alt+H", "Hide / ignore image");
+                        row(ui, "M",           "Toggle metadata strip");
                         row(ui, "Delete × 2",  "Move to trash (confirm within 4 s)");
                         row(ui, "Escape",       "Cancel delete");
-                        row(ui, "M (menu only)", "Queue metadata strip");
 
                         ui.label(""); ui.label(""); ui.end_row();
                         section(ui, "SAVE & REFRESH");
-                        row(ui, "Ctrl+S",       "Save changes in place");
+                        row(ui, "Ctrl+S",       "Save changes");
                         row(ui, "Ctrl+Shift+S", "Save As");
                         row(ui, "Ctrl+R",       "Soft refresh");
                         row(ui, "Ctrl+Shift+R", "Hard refresh");
@@ -1289,14 +1307,12 @@ impl RivettApp {
 
             let has_metadata = !self.metadata.is_empty();
             let is_stripped = self.current_path.as_ref().map(|p| self.session.is_metadata_stripped(p)).unwrap_or(false);
-            if ui.add_enabled(has_image && has_metadata && !is_stripped, egui::Button::new("Strip metadata")).clicked() {
+            let strip_label = if is_stripped { "Unstage metadata strip" } else { "Strip metadata" };
+            if ui.add_enabled(has_image && has_metadata, egui::Button::new(strip_label).shortcut_text("M")).clicked() {
                 if let Some(path) = self.current_path.clone() {
                     self.session.toggle_metadata_strip(path);
                 }
                 ui.close_menu();
-            }
-            if is_stripped {
-                ui.label(egui::RichText::new("  (* metadata strip pending save)").small().italics());
             }
 
             ui.separator();
@@ -1874,7 +1890,12 @@ impl eframe::App for RivettApp {
                 let rect   = egui::Rect::from_center_size(center, size);
 
                 let a = (alpha * 200.0) as u8;
-                painter.rect_filled(rect, 6.0, egui::Color32::from_rgba_unmultiplied(30, 30, 30, a));
+                let bg_color = if toast.kind == ToastKind::Error {
+                    egui::Color32::from_rgba_unmultiplied(180, 30, 30, a)
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(30, 30, 30, a)
+                };
+                painter.rect_filled(rect, 6.0, bg_color);
                 painter.galley(rect.min + pad, galley, egui::Color32::from_rgba_unmultiplied(255, 255, 255, (alpha * 255.0) as u8));
                 ctx.request_repaint();
             }
@@ -1898,6 +1919,7 @@ fn cc_gl_from_ctx(ctx: &Context) -> Option<Arc<glow::Context>> {
 enum ToastKind {
     General,
     ImageStatus,
+    Error,
 }
 
 struct Toast {

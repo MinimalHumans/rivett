@@ -65,6 +65,8 @@ pub struct AppSettings {
     pub central_db_path: Option<PathBuf>,
     /// Whether the info panel is visible.
     pub show_info_panel: bool,
+    /// Default state for "Preserve metadata" in Save As dialog.
+    pub preserve_metadata: bool,
 }
 
 impl Default for AppSettings {
@@ -75,6 +77,7 @@ impl Default for AppSettings {
             window_geometry: None,
             central_db_path: None,
             show_info_panel: false, // Collapsed by default
+            preserve_metadata: true,
         }
     }
 }

@@ -89,6 +89,12 @@ pub struct Database {
 impl Database {
     /// Open (or create) a database at `path`.
     pub fn open(path: &Path) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            if !parent.exists() {
+                log::info!("creating database directory: {}", parent.display());
+                let _ = std::fs::create_dir_all(parent);
+            }
+        }
         let conn = Connection::open(path)?;
         let db = Self { conn };
         db.initialise()?;
