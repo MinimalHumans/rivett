@@ -150,6 +150,11 @@ impl RivettApp {
             }
         };
 
+        // If we are already showing this image (and it's not in a loading/error state), skip.
+        if self.current_path.as_ref() == Some(&path) && self.viewer.has_image() && !self.viewer.loading && self.viewer.load_error.is_none() {
+            return;
+        }
+
         // Clear existing image-status toast when moving to a new image
         if let Some(ref t) = self.toast {
             if t.kind == ToastKind::ImageStatus {
@@ -173,15 +178,13 @@ impl RivettApp {
         if let Some(img) = self.image_cache.get(&path) {
             self.viewer.load_image(ctx, img, rotation, adjustments, preserve_zoom);
         } else {
-            match load_image(&path) {
-                Ok(img) => {
-                    self.image_cache.insert(path.clone(), img.clone());
-                    self.viewer.load_image(ctx, &img, rotation, adjustments, preserve_zoom);
-                }
-                Err(e)  => {
-                    log::warn!("{e}");
-                    self.viewer.set_error(e);
-                }
+            // Not in cache. If already pending in background, just set loading state.
+            if self.image_cache.is_pending(&path) {
+                self.viewer.set_loading();
+            } else {
+                // Not in cache, not pending. Start prefetch.
+                self.image_cache.prefetch(path.clone());
+                self.viewer.set_loading();
             }
         }
 
@@ -1614,8 +1617,19 @@ fn save_pixel_rotation(
 
 impl eframe::App for RivettApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        let old_cache_len = self.image_cache.len();
         self.image_cache.poll();
         ctx.request_repaint();
+
+        // If something was loaded into the cache, check if it's the current image
+        // that was previously in a loading state.
+        if self.image_cache.len() > old_cache_len {
+            if let Some(path) = self.current_path.clone() {
+                if self.viewer.loading && self.image_cache.contains(&path) {
+                    self.load_current(ctx, true);
+                }
+            }
+        }
 
         // Execute any pending drag-out here, at the very top of the update loop,
         // before egui opens any closures. DoDragDrop must run while the main thread's
@@ -1771,6 +1785,10 @@ impl eframe::App for RivettApp {
                         );
                     }
                 }
+            } else if self.viewer.loading {
+                ui.centered_and_justified(|ui| {
+                    ui.add(egui::Spinner::new().size(40.0));
+                });
             } else if let Some(ref err) = self.viewer.load_error {
                 painter.text(
                     canvas.center(), egui::Align2::CENTER_CENTER,

@@ -199,7 +199,6 @@ impl DirectoryListing {
 // Image loading
 // ---------------------------------------------------------------------------
 
-use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -220,7 +219,7 @@ pub struct Histograms {
 /// A fully decoded RGBA image ready for upload to the GPU.
 #[derive(Clone)]
 pub struct DecodedImage {
-    pub rgba:       Vec<f32>,
+    pub rgba:       Arc<[f32]>,
     pub width:      u32,
     pub height:     u32,
     pub histograms: Histograms,
@@ -234,7 +233,7 @@ impl DecodedImage {
         let mut hist_r = vec![0u32; 256];
         let mut hist_g = vec![0u32; 256];
         let mut hist_b = vec![0u32; 256];
-        
+
         let mut low_clips  = [0u32; 3];
         let mut high_clips = [0u32; 3];
         let total_pixels = (width * height) as usize;
@@ -243,7 +242,7 @@ impl DecodedImage {
             for (i, &val) in chunk.iter().enumerate().take(3) {
                 if val < 0.0 { low_clips[i] += 1; }
                 if val > 1.0 { high_clips[i] += 1; }
-                
+
                 let bin = (val.clamp(0.0, 1.0) * 255.0) as usize;
                 match i {
                     0 => hist_r[bin.min(255)] += 1,
@@ -253,7 +252,7 @@ impl DecodedImage {
                 }
             }
         }
-        
+
         // Normalize histograms
         let max_r = (*hist_r.iter().max().unwrap_or(&1)).max(1) as f32;
         let max_g = (*hist_g.iter().max().unwrap_or(&1)).max(1) as f32;
@@ -268,7 +267,7 @@ impl DecodedImage {
             total_pixels,
         };
 
-        Self { rgba, width, height, histograms, is_hdr: false }
+        Self { rgba: rgba.into(), width, height, histograms, is_hdr: false }
     }
 
     /// Mark this image as HDR so histogram remap handles are shown in the UI.
@@ -288,6 +287,7 @@ impl DecodedImage {
 }
 
 /// Decode `path` into a [`DecodedImage`].
+
 pub fn load_image(path: &Path) -> Result<DecodedImage, String> {
     let fmt = SupportedFormat::from_path(path);
     
@@ -576,6 +576,22 @@ impl ImageCache {
                 pending.remove(&path);
             }
         }
+    }
+
+    pub fn is_pending(&self, path: &PathBuf) -> bool {
+        if let Ok(pending) = self.pending.lock() {
+            pending.contains_key(path)
+        } else {
+            false
+        }
+    }
+
+    pub fn contains(&self, path: &PathBuf) -> bool {
+        self.images.contains_key(path)
+    }
+
+    pub fn len(&self) -> usize {
+        self.images.len()
     }
 
     /// Start loading an image in a background thread if it's not already cached or pending.

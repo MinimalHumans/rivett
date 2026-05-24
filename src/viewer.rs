@@ -6,6 +6,7 @@
 use egui::{Context, Rect, TextureHandle, TextureOptions, Vec2};
 use crate::image_loader::DecodedImage;
 use crate::session::Rotation;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // ViewerMode
@@ -49,6 +50,8 @@ pub struct ViewerState {
     pub fullscreen: bool,
     /// Last error message if loading failed.
     pub load_error: Option<String>,
+    /// Whether the image is currently loading in the background.
+    pub loading: bool,
     /// Viewing gamma (default 1.0).
     pub gamma: f32,
     /// Exposure offset (default 0.0).
@@ -59,7 +62,7 @@ pub struct ViewerState {
     pub remap_max: f32,
     
     /// Rotated f32 data for the custom shader.
-    pub f32_data:  Option<Vec<f32>>,
+    pub f32_data:  Option<Arc<[f32]>>,
     /// Flag to signal src/app.rs to upload f32_data to GammaRenderer.
     pub needs_texture_upload: bool,
 
@@ -81,6 +84,7 @@ impl Default for ViewerState {
             selection:      None,
             fullscreen:     false,
             load_error:     None,
+            loading:        false,
             gamma:          1.0,
             exposure:       0.0,
             remap_min:      0.0,
@@ -99,7 +103,8 @@ impl ViewerState {
     /// Load a decoded image into egui.
     pub fn load_image(&mut self, ctx: &Context, img: &DecodedImage, rotation: Rotation, adjustments: crate::session::ImageAdjustments, preserve_zoom: bool) {
         self.load_error   = None;
-        self.last_image   = Some(img.clone());
+        self.loading      = false;
+        self.last_image   = Some(img.clone()); // Cheap clone now (Arc)
         self.last_rotation = rotation;
         self.exposure     = adjustments.exposure;
         self.gamma        = adjustments.gamma;
@@ -114,6 +119,10 @@ impl ViewerState {
         }
     }
 
+    pub fn set_loading(&mut self) {
+        self.loading = true;
+    }
+
     /// Re-calculate the texture using current rotation settings.
     pub fn refresh_texture(&mut self, ctx: &Context) {
         let Some(ref img) = self.last_image else { return };
@@ -122,18 +131,16 @@ impl ViewerState {
         let (rgba_f32, w, h) = apply_rotation(img, self.last_rotation);
         
         // 2. Store f32 data for the custom shader and signal upload
-        self.f32_data = Some(rgba_f32.clone());
+        self.image_size = Vec2::new(w as f32, h as f32);
+        self.f32_data = Some(rgba_f32);
         self.needs_texture_upload = true;
 
-        // 3. Downsample to u8 for egui (temporary/fallback/selection rendering)
-        let rgba_u8: Vec<u8> = rgba_f32.iter().map(|&v| {
-            (v.clamp(0.0, 1.0) * 255.0) as u8
-        }).collect();
-
-        let color_image = egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba_u8);
-        self.image_size = Vec2::new(w as f32, h as f32);
+        // 3. Skip full-resolution u8 downsample for egui.
+        // We just need a dummy texture handle so app.rs knows we have an image
+        // and egui can calculate the interaction response.
+        let color_image = egui::ColorImage::from_rgba_unmultiplied([1, 1], &[0, 0, 0, 0]);
         self.texture    = Some(ctx.load_texture(
-            "current_image",
+            "current_image_placeholder",
             color_image,
             TextureOptions::default(),
         ));
@@ -158,11 +165,13 @@ impl ViewerState {
         self.remap_max  = 1.0;
         self.f32_data   = None;
         self.needs_texture_upload = false;
+        self.loading    = false;
     }
 
     pub fn set_error(&mut self, err: String) {
         self.clear();
         self.load_error = Some(err);
+        self.loading    = false;
     }
 
     /// Reset zoom to 100% (1:1 pixel mapping).
@@ -237,12 +246,12 @@ impl ViewerState {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-fn apply_rotation(img: &DecodedImage, rotation: Rotation) -> (Vec<f32>, usize, usize) {
+fn apply_rotation(img: &DecodedImage, rotation: Rotation) -> (Arc<[f32]>, usize, usize) {
     if rotation.is_identity() {
         return (img.rgba.clone(), img.width as usize, img.height as usize);
     }
 
-    let buffer = image::ImageBuffer::<image::Rgba<f32>, Vec<f32>>::from_raw(img.width, img.height, img.rgba.clone()).unwrap();
+    let buffer = image::ImageBuffer::<image::Rgba<f32>, Vec<f32>>::from_raw(img.width, img.height, img.rgba.to_vec()).unwrap();
     let mut dimg = image::DynamicImage::ImageRgba32F(buffer);
 
     dimg = match rotation {
@@ -254,7 +263,7 @@ fn apply_rotation(img: &DecodedImage, rotation: Rotation) -> (Vec<f32>, usize, u
 
     let rgba = dimg.to_rgba32f();
     let (w, h) = rgba.dimensions();
-    (rgba.into_raw(), w as usize, h as usize)
+    (Arc::from(rgba.into_raw()), w as usize, h as usize)
 }
 
 // ---------------------------------------------------------------------------
