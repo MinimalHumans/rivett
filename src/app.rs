@@ -808,7 +808,7 @@ impl RivettApp {
         if !self.show_help { return; }
 
         let mut open = true;
-        egui::Window::new("Keyboard Shortcuts")
+        egui::Window::new("Shortcuts & Interactions")
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -828,51 +828,81 @@ impl RivettApp {
                     ui.end_row();
                 };
 
-                egui::Grid::new("help_grid")
-                    .num_columns(2)
-                    .spacing([16.0, 3.0])
-                    .show(ui, |ui| {
-                        section(ui, "NAVIGATION");
-                        row(ui, "→",            "Next image");
-                        row(ui, "←",            "Previous image");
-                        row(ui, "↓  /  Page Down", "Jump forward 10");
-                        row(ui, "↑  /  Page Up",   "Jump back 10");
-                        row(ui, "Home",          "First image");
-                        row(ui, "End",           "Last image");
-                        row(ui, "Alt+↑",         "Open parent directory");
-                        row(ui, "Shift + navigate", "Preserve zoom");
+                ui.horizontal_top(|ui| {
+                    ui.vertical(|ui| {
+                        egui::Grid::new("help_grid_kb")
+                            .num_columns(2)
+                            .spacing([16.0, 3.0])
+                            .show(ui, |ui| {
+                                section(ui, "KEYBOARD NAVIGATION");
+                                row(ui, "→",            "Next image");
+                                row(ui, "←",            "Previous image");
+                                row(ui, "↓  /  PgDn",   "Jump forward 10");
+                                row(ui, "↑  /  PgUp",   "Jump back 10");
+                                row(ui, "Home",          "First image");
+                                row(ui, "End",           "Last image");
+                                row(ui, "Alt+↑",         "Open parent directory");
+                                row(ui, "Shift + nav",   "Preserve zoom");
 
-                        ui.label(""); ui.label(""); ui.end_row();
-                        section(ui, "VIEW");
-                        row(ui, "F",  "Toggle fit / actual size");
-                        row(ui, "I",  "Toggle info panel");
-                        row(ui, "?",  "Show / hide this help");
+                                ui.label(""); ui.label(""); ui.end_row();
+                                section(ui, "VIEW");
+                                row(ui, "F",  "Toggle fit / actual size");
+                                row(ui, "I",  "Toggle info panel");
+                                row(ui, "?",  "Show / hide this help");
 
-                        ui.label(""); ui.label(""); ui.end_row();
-                        section(ui, "RATING");
-                        row(ui, "1 – 5", "Set star rating");
-                        row(ui, "0",     "Clear rating");
+                                ui.label(""); ui.label(""); ui.end_row();
+                                section(ui, "RATING");
+                                row(ui, "1 – 5", "Set star rating");
+                                row(ui, "0",     "Clear rating");
 
-                        ui.label(""); ui.label(""); ui.end_row();
-                        section(ui, "ADJUSTMENTS");
-                        row(ui, "[",  "Rotate counter-clockwise");
-                        row(ui, "]",  "Rotate clockwise");
+                                ui.label(""); ui.label(""); ui.end_row();
+                                section(ui, "FILE MANAGEMENT");
+                                row(ui, "H / Alt+H",   "Hide / ignore image (Session only)");
+                                row(ui, "M",           "Toggle metadata strip");
+                                row(ui, "Del × 2",     "Move to trash");
+                                row(ui, "Escape",       "Cancel delete");
 
-                        ui.label(""); ui.label(""); ui.end_row();
-                        section(ui, "FILE MANAGEMENT");
-                        row(ui, "H  /  Alt+H", "Hide / ignore image");
-                        row(ui, "M",           "Toggle metadata strip");
-                        row(ui, "Delete × 2",  "Move to trash (confirm within 4 s)");
-                        row(ui, "Escape",       "Cancel delete");
-
-                        ui.label(""); ui.label(""); ui.end_row();
-                        section(ui, "SAVE & REFRESH");
-                        row(ui, "Ctrl+S",       "Save changes");
-                        row(ui, "Ctrl+Shift+S", "Save As");
-                        row(ui, "Ctrl+C",       "Copy image to clipboard");
-                        row(ui, "Ctrl+R",       "Soft refresh");
-                        row(ui, "Ctrl+Shift+R", "Hard refresh");
+                            });
                     });
+
+                    ui.add_space(32.0);
+
+                    ui.vertical(|ui| {
+                        egui::Grid::new("help_grid_mouse")
+                            .num_columns(2)
+                            .spacing([16.0, 3.0])
+                            .show(ui, |ui| {
+                                section(ui, "MOUSE CANVAS");
+                                row(ui, "Left-drag",        "Pan image");
+                                row(ui, "Ctrl + Drag",      "Drag out to OS");
+                                row(ui, "Scroll / Pinch",   "Zoom in / out");
+                                row(ui, "Double-click",     "Open file picker");
+                                row(ui, "Right-click",      "Context menu");
+                                row(ui, "Drop file",        "Open image");
+                                
+                                ui.label(""); ui.label(""); ui.end_row();
+                                section(ui, "HISTOGRAM & ADJUSTMENTS");
+                                row(ui, "Drag handles",     "Adjust black/white pt");
+                                row(ui, "Drag center",      "Shift both points");
+                                row(ui, "Dbl-click handle", "Reset point");
+                                row(ui, "Shift + Drag",     "Coarse exposure adj");
+                                row(ui, "Dbl-click slider", "Reset exp/gamma");
+
+                                ui.label(""); ui.label(""); ui.end_row();
+                                section(ui, "ADJUSTMENTS");
+                                row(ui, "[",  "Rotate counter-clockwise");
+                                row(ui, "]",  "Rotate clockwise");
+                                
+                                ui.label(""); ui.label(""); ui.end_row();
+                                section(ui, "SAVE & REFRESH");
+                                row(ui, "Ctrl+S",       "Save changes");
+                                row(ui, "Ctrl+Shift+S", "Save As");
+                                row(ui, "Ctrl+C",       "Copy image to clipboard");
+                                row(ui, "Ctrl+R",       "Soft refresh");
+                                row(ui, "Ctrl+Shift+R", "Hard refresh");
+                            });
+                    });
+                });
             });
         if !open { self.show_help = false; }
     }
