@@ -1,18 +1,17 @@
 [package]
 name        = "rivett"
-version = "0.3.0"
-authors     = ["Rivett Developers <dev@rivett.com>"]
+version = "0.3.1"
+authors     = ["Jesse Kretschmer"]
 edition     = "2021"
 description = "Rust Image Vetting Tool — fast, keyboard-driven image viewer"
 license     = "MIT"
 
 [package.metadata.bundle]
-name = "Rivett"
+name = "rivett"
 identifier = "com.rivett.rivett"
 icon = ["resources/icon.png"]
-version = "0.3.0"
 resources = []
-copyright = "Copyright © 2026 Rivett Developers. All rights reserved."
+copyright = "Copyright © 2026 Jesse Kretschmer (Minimal Humans)"
 category = "Graphics and Design"
 short_description = "Fast image vetting tool."
 long_description = """
@@ -72,6 +71,7 @@ raw-window-handle = "0.6"  # explicit dep for drag-out window handle constructio
 img-parts   = "0.3"   # JPEG/PNG segment manipulation for lossless EXIF orientation writes
 chrono      = "0.4"
 bytemuck    = { version = "1", features = ["derive"] }
+arboard = "3.6.1"
 
 # ---------------------------------------------------------------------------
 # Dev / test dependencies

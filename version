@@ -12,7 +12,7 @@ def get_current_version():
         print("Cargo.toml not found in current directory.")
         sys.exit(1)
     content = CARGO_TOML.read_text()
-    match = re.search(r'^version\s*=\s*"([^"]+)"', content, re.MULTILINE)
+    match = re.search(r'^\s*version\s*=\s*"([^"]+)"', content, re.MULTILINE)
     if not match:
         print("Could not find version in Cargo.toml")
         sys.exit(1)
@@ -20,9 +20,9 @@ def get_current_version():
 
 def set_version(new_version):
     content = CARGO_TOML.read_text()
-    # Update both [package] version and [package.metadata.bundle] version
-    # Using a lambda to replace all occurrences of version = "..."
-    new_content = re.sub(r'^version\s*=\s*"[^"]+"', f'version = "{new_version}"', content, flags=re.MULTILINE)
+    # Update all version = "..." entries that are at the start of a line (ignoring whitespace)
+    # This covers [package] and metadata sections without hitting dependency versions
+    new_content = re.sub(r'^\s*version\s*=\s*"[^"]+"', f'version = "{new_version}"', content, flags=re.MULTILINE)
     CARGO_TOML.write_text(new_content)
     print(f"Updated Cargo.toml version to: {new_version}")
 
@@ -99,17 +99,21 @@ def cmd_release(args):
         subprocess.run(["git", "add", "Cargo.toml"], check=True)
         subprocess.run(["git", "commit", "-m", f"chore: release {base_version}"], check=True)
 
-    # Tag and push
+    # Tag
     print(f"Tagging {tag}...")
     subprocess.run(["git", "tag", "-a", tag, "-m", f"Release {tag}"], check=True)
     
-    print("Pushing to origin main...")
-    subprocess.run(["git", "push", "origin", "main"], check=True)
-    
-    print(f"Pushing tag {tag} to origin...")
-    subprocess.run(["git", "push", "origin", tag], check=True)
-    
-    print(f"Successfully released {tag}")
+    # Ask before pushing
+    response = input(f"Push commit and tag {tag} to origin? [y/N]: ").strip().lower()
+    if response == 'y':
+        print("Pushing to origin main...")
+        subprocess.run(["git", "push", "origin", "main"], check=True)
+        
+        print(f"Pushing tag {tag} to origin...")
+        subprocess.run(["git", "push", "origin", tag], check=True)
+        print(f"Successfully released {tag}")
+    else:
+        print("Release committed and tagged locally, but not pushed.")
 
 def main():
     parser = argparse.ArgumentParser(description="Version management script for Rivett")
