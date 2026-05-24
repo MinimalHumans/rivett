@@ -191,8 +191,8 @@ impl SessionState {
         }
     }
 
-    pub fn adjustments_for(&self, path: &PathBuf) -> ImageAdjustments {
-        self.adjustments.get(path).copied().unwrap_or_default()
+    pub fn adjustments_for(&self, path: &PathBuf) -> Option<ImageAdjustments> {
+        self.adjustments.get(path).copied()
     }
 
     pub fn set_adjustments(&mut self, path: PathBuf, adj: ImageAdjustments) {

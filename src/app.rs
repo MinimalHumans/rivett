@@ -173,9 +173,14 @@ impl RivettApp {
         }
 
         let rotation = self.session.rotation_for(&path);
-        let adjustments = self.session.adjustments_for(&path);
+        let mut adjustments = self.session.adjustments_for(&path).unwrap_or_default();
 
         if let Some(img) = self.image_cache.get(&path) {
+            // Auto-set 2.2 gamma for linear/HDR images if no session adjustments yet
+            if img.is_hdr && self.session.adjustments_for(&path).is_none() {
+                adjustments.gamma = 2.2;
+                self.session.set_adjustments(path.clone(), adjustments);
+            }
             self.viewer.load_image(ctx, img, rotation, adjustments, preserve_zoom);
         } else {
             // Not in cache. If already pending in background, just set loading state.
