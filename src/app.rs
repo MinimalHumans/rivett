@@ -65,6 +65,7 @@ pub struct RivettApp {
 struct SaveAsState {
     output_path:       std::path::PathBuf,
     preserve_metadata: bool,
+    focus_requested:   bool,
 }
 
 impl RivettApp {
@@ -687,6 +688,7 @@ impl RivettApp {
             self.save_as_state = Some(SaveAsState {
                 output_path,
                 preserve_metadata: true,
+                focus_requested: false,
             });
         }
     }
@@ -705,11 +707,23 @@ impl RivettApp {
                     ui.label(format!("Path: {}", state.output_path.display()));
                     ui.add_space(8.0);
 
-                    ui.checkbox(&mut state.preserve_metadata, "Preserve metadata");
-                    ui.add_space(12.0);
+                    let has_metadata = self.metadata.iter().any(|m| !m.is_header);
+                    if has_metadata {
+                        ui.checkbox(&mut state.preserve_metadata, "Preserve metadata");
+                        ui.add_space(12.0);
+                    } else {
+                        state.preserve_metadata = false;
+                    }
 
                     ui.horizontal(|ui| {
-                        if ui.button("Save").clicked() {
+                        let save_btn = ui.button("Save");
+                        
+                        if !state.focus_requested {
+                            save_btn.request_focus();
+                            state.focus_requested = true;
+                        }
+
+                        if save_btn.clicked() {
                             self.perform_save_as(&state);
                             should_close = true;
                         }
