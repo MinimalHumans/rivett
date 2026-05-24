@@ -9,7 +9,7 @@ use chrono;
 
 use crate::db::{Database, ImageRecord};
 use std::path::Path;
-use crate::image_loader::{load_image, ImageCache, DirectoryListing};
+use crate::image_loader::{ImageCache, DirectoryListing};
 use crate::metadata::{read_metadata, MetaEntry};
 use crate::formats::SupportedFormat;
 use crate::session::{SessionState, Rotation, RatingFilter, RatingFilterOp};
@@ -496,6 +496,50 @@ impl RivettApp {
 
     // ── Save changes (Ctrl+S) ───────────────────────────────────────────
 
+    fn copy_to_clipboard(&mut self) {
+        let Some(path) = self.current_path.clone() else { return };
+        let Some(decoded) = self.image_cache.get(&path) else {
+            self.toast("Image not in cache", ToastKind::Error);
+            return;
+        };
+
+        let rotation = self.session.rotation_for(&path);
+        
+        let pixels = decoded.to_u8();
+        let width = decoded.width;
+        let height = decoded.height;
+
+        let (rotated_pixels, w, h) = if rotation.is_identity() {
+            (pixels, width, height)
+        } else {
+            let src = image::RgbaImage::from_raw(width, height, pixels).unwrap();
+            let rotated = match rotation {
+                Rotation::Cw90  => image::imageops::rotate90(&src),
+                Rotation::Cw180 => image::imageops::rotate180(&src),
+                Rotation::Cw270 => image::imageops::rotate270(&src),
+                _ => unreachable!(),
+            };
+            let (nw, nh) = rotated.dimensions();
+            (rotated.into_raw(), nw, nh)
+        };
+
+        match arboard::Clipboard::new() {
+            Ok(mut clipboard) => {
+                let img_data = arboard::ImageData {
+                    width: w as usize,
+                    height: h as usize,
+                    bytes: std::borrow::Cow::from(rotated_pixels),
+                };
+                if let Err(e) = clipboard.set_image(img_data) {
+                    self.toast(format!("Clipboard error: {e}"), ToastKind::Error);
+                } else {
+                    self.toast("Image copied to clipboard", ToastKind::General);
+                }
+            }
+            Err(e) => self.toast(format!("Failed to open clipboard: {e}"), ToastKind::Error),
+        }
+    }
+
     fn save_current_changes(&mut self, ctx: &Context) {
         let Some(path) = self.current_path.clone() else { return };
         let rotation = self.session.rotation_for(&path);
@@ -682,7 +726,10 @@ impl RivettApp {
         }
 
         if ctrl && !input.modifiers.shift && input.key_pressed(Key::S) {
-            self.save_current_rotation(ctx);
+            self.save_current_changes(ctx);
+        }
+        if ctrl && !input.modifiers.shift && input.key_pressed(Key::C) {
+            self.copy_to_clipboard();
         }
         if ctrl && input.modifiers.shift && input.key_pressed(Key::S) {
             self.save_as(ctx);
@@ -822,6 +869,7 @@ impl RivettApp {
                         section(ui, "SAVE & REFRESH");
                         row(ui, "Ctrl+S",       "Save changes");
                         row(ui, "Ctrl+Shift+S", "Save As");
+                        row(ui, "Ctrl+C",       "Copy image to clipboard");
                         row(ui, "Ctrl+R",       "Soft refresh");
                         row(ui, "Ctrl+Shift+R", "Hard refresh");
                     });
@@ -918,7 +966,7 @@ impl RivettApp {
 
                         ui.separator();
 
-                        let mut adj = self.session.adjustments_for(&path);
+                        let mut adj = self.session.adjustments_for(&path).unwrap_or_default();
                         let mut changed = false;
                         let shift_held = ui.input(|i| i.modifiers.shift);
 
@@ -1321,6 +1369,10 @@ impl RivettApp {
                 if let Some(ref p) = self.current_path {
                     ctx.copy_text(p.to_string_lossy().into_owned());
                 }
+                ui.close_menu();
+            }
+            if ui.add_enabled(has_image, egui::Button::new("Copy Image").shortcut_text("Ctrl+C")).clicked() {
+                self.copy_to_clipboard();
                 ui.close_menu();
             }
             if ui.add_enabled(has_image, egui::Button::new("Open folder")).clicked() {
@@ -1764,7 +1816,6 @@ impl eframe::App for RivettApp {
 
             self.draw_context_menu(&response, ctx);
 
-            let painter = ui.painter();
             if self.viewer.texture.is_some() {
                 let rect = self.viewer.image_rect(canvas);
 
@@ -1781,7 +1832,7 @@ impl eframe::App for RivettApp {
                         
                         // We use a callback to upload because we need the 'glow' context
                         let upload_renderer = renderer.clone();
-                        painter.add(egui::PaintCallback {
+                        ui.painter().add(egui::PaintCallback {
                             rect,
                             callback: Arc::new(egui_glow::CallbackFn::new(move |_info, painter| {
                                 let mut renderer = upload_renderer.lock().unwrap();
@@ -1803,7 +1854,7 @@ impl eframe::App for RivettApp {
                         remap_min: self.viewer.remap_min,
                         remap_max: self.viewer.remap_max,
                     };
-                    painter.add(egui::PaintCallback {
+                    ui.painter().add(egui::PaintCallback {
                         rect: canvas, // Cover the entire canvas to allow for zoom/pan clipping
                         callback: Arc::new(egui_glow::CallbackFn::new(move |_info, painter| {
                             let renderer = renderer.lock().unwrap();
@@ -1813,7 +1864,7 @@ impl eframe::App for RivettApp {
                 } else {
                     // Fallback to standard egui image if renderer is not initialized
                     if let Some(ref texture) = self.viewer.texture {
-                        painter.image(
+                        ui.painter().image(
                             texture.id(), rect,
                             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                             egui::Color32::WHITE,
@@ -1825,14 +1876,14 @@ impl eframe::App for RivettApp {
                     ui.add(egui::Spinner::new().size(40.0));
                 });
             } else if let Some(ref err) = self.viewer.load_error {
-                painter.text(
+                ui.painter().text(
                     canvas.center(), egui::Align2::CENTER_CENTER,
                     format!("Error loading image:\n{err}"),
                     egui::FontId::proportional(18.0),
                     egui::Color32::LIGHT_RED,
                 );
             } else {
-                painter.text(
+                ui.painter().text(
                     canvas.center(), egui::Align2::CENTER_CENTER,
                     "Drag an image here, or double-click to open",
                     egui::FontId::proportional(18.0),
@@ -1853,7 +1904,7 @@ impl eframe::App for RivettApp {
                     egui::Sense::hover(),
                 );
                 response.on_hover_text("Unsaved changes (rotation, crops, metadata) — Ctrl+S to save");
-                painter.circle_filled(dot_pos, 6.0, egui::Color32::from_rgb(255, 180, 0));
+                ui.painter().circle_filled(dot_pos, 6.0, egui::Color32::from_rgb(255, 180, 0));
             }
 
             if self.delete_confirm.as_ref().map(|d| d.alive()).unwrap_or(false) {
@@ -1862,8 +1913,8 @@ impl eframe::App for RivettApp {
                     canvas.center(),
                     egui::vec2(420.0, 56.0),
                 );
-                painter.rect_filled(msg_rect, 6.0, bg);
-                painter.text(
+                ui.painter().rect_filled(msg_rect, 6.0, bg);
+                ui.painter().text(
                     msg_rect.center(), egui::Align2::CENTER_CENTER,
                     "Press Delete to confirm — Esc to cancel",
                     egui::FontId::proportional(16.0), egui::Color32::WHITE,

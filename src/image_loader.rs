@@ -202,6 +202,7 @@ impl DirectoryListing {
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::collections::{HashMap, VecDeque};
 
 /// Histograms for each color channel.
 #[derive(Clone, Default)]
