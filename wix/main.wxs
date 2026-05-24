@@ -25,7 +25,7 @@
 
     <Product
         Id='*'
-        Name='Rivett'
+        Name='Rivett $(var.Version)'
         UpgradeCode='4FC25C8F-175E-4005-8AD9-E09C31EB26C3'
         Manufacturer='Rivett Developers'
         Language='1033'
