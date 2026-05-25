@@ -5,7 +5,7 @@
 //! note, rotation) produce a row in the `images` table. Rows that become empty are
 //! deleted automatically by [`Database::gc_empty_record`].
 
-use rusqlite::{params, Connection, Result, OptionalExtension};
+use rusqlite::{params, Connection, Result};
 use std::path::Path;
 use uuid::Uuid;
 
@@ -580,13 +580,18 @@ impl Database {
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
         if let Some(rf) = rating_filter {
-            let op_sql = match rf.op {
-                crate::session::RatingFilterOp::AtLeast => ">=",
-                crate::session::RatingFilterOp::AtMost  => "<=",
-                crate::session::RatingFilterOp::Exactly => "=",
-            };
-            where_clauses.push(format!("i.rating {} ?{}", op_sql, params.len() + 1));
-            params.push(Box::new(rf.value as i64));
+            if rf.op == crate::session::RatingFilterOp::Unrated {
+                where_clauses.push(String::from("i.rating IS NULL"));
+            } else {
+                let op_sql = match rf.op {
+                    crate::session::RatingFilterOp::AtLeast => ">=",
+                    crate::session::RatingFilterOp::AtMost  => "<=",
+                    crate::session::RatingFilterOp::Exactly => "=",
+                    crate::session::RatingFilterOp::Unrated => unreachable!(),
+                };
+                where_clauses.push(format!("i.rating {} ?{}", op_sql, params.len() + 1));
+                params.push(Box::new(rf.value as i64));
+            }
 
             if let Some(prefix) = &rf.path_prefix {
                 where_clauses.push(format!("d.path LIKE ?{}", params.len() + 1));

@@ -112,6 +112,7 @@ pub enum RatingFilterOp {
     AtLeast,
     AtMost,
     Exactly,
+    Unrated,
 }
 
 /// A rating predicate used to filter the directory listing for this session.
@@ -132,11 +133,12 @@ impl RatingFilter {
         }
 
         match rating {
-            None    => false,
+            None    => self.op == RatingFilterOp::Unrated,
             Some(r) => match self.op {
                 RatingFilterOp::AtLeast => r >= self.value,
                 RatingFilterOp::AtMost  => r <= self.value,
                 RatingFilterOp::Exactly => r == self.value,
+                RatingFilterOp::Unrated => false,
             },
         }
     }

@@ -889,7 +889,6 @@ impl RivettApp {
                                 ui.label(""); ui.label(""); ui.end_row();
                                 section(ui, "FILE MANAGEMENT");
                                 row(ui, "H / Alt+H",   "Hide / ignore image (Session only)");
-                                row(ui, "M",           "Toggle metadata strip");
                                 row(ui, "Del × 2",     "Move to trash");
                                 row(ui, "Escape",       "Cancel delete");
 
@@ -1024,154 +1023,6 @@ impl RivettApp {
                         }
 
                         label_kv(ui, "Zoom", format!("{:.0}%", self.viewer.zoom * 100.0));
-
-                        ui.separator();
-
-                        // ── Tags Section ─────────────────────────────────────
-                        let tag_field_id = egui::Id::new("tag_input_field");
-                        let mut tag_to_commit = None;
-
-                        // 1. Intercept navigation keys BEFORE TextEdit processes them
-                        let field_has_focus = ui.memory(|m| m.has_focus(tag_field_id));
-                        if field_has_focus && !self.tag_suggestions.is_empty() {
-                            ui.input_mut(|i| {
-                                if i.key_pressed(egui::Key::ArrowDown) {
-                                    self.tag_suggestion_idx = (self.tag_suggestion_idx + 1).min(self.tag_suggestions.len().saturating_sub(1));
-                                    i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
-                                } else if i.key_pressed(egui::Key::ArrowUp) {
-                                    self.tag_suggestion_idx = self.tag_suggestion_idx.saturating_sub(1);
-                                    i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
-                                } else if i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Tab) {
-                                    if let Some(s) = self.tag_suggestions.get(self.tag_suggestion_idx) {
-                                        log::debug!("Tags: suggestion '{}' accepted via keyboard (Enter/Tab)", s);
-                                        tag_to_commit = Some(s.clone());
-                                        i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-                                        i.consume_key(egui::Modifiers::NONE, egui::Key::Tab);
-                                    }
-                                } else if i.key_pressed(egui::Key::Escape) {
-                                    log::debug!("Tags: suggestions cleared via Escape");
-                                    self.tag_suggestions.clear();
-                                    i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-                                }
-                            });
-                        } else if field_has_focus {
-                            // Standard enter to commit typed text
-                            ui.input_mut(|i| {
-                                if i.key_pressed(egui::Key::Enter) && !self.tag_input.trim().is_empty() {
-                                    log::debug!("Tags: custom tag '{}' committed via Enter", self.tag_input);
-                                    tag_to_commit = Some(self.tag_input.clone());
-                                    i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-                                }
-                            });
-                        }
-
-                        ui.horizontal(|ui| {
-                            let text_edit = egui::TextEdit::singleline(&mut self.tag_input)
-                                .hint_text("Add tag…")
-                                .id(tag_field_id);
-                            
-                            let res = ui.add_sized([ui.available_width() - 40.0, 20.0], text_edit);
-                            let popup_pos = res.rect.left_bottom();
-
-                            // 2. Update suggestions based on current input
-                            if res.has_focus() && tag_to_commit.is_none() {
-                                if self.tag_input.len() >= 2 {
-                                    let prev_count = self.tag_suggestions.len();
-                                    self.tag_suggestions = self.all_tags.iter()
-                                        .filter(|t| t.name.to_lowercase().contains(&self.tag_input.to_lowercase()))
-                                        .filter(|t| !self.current_image_tags.iter().any(|ct| ct.name == t.name))
-                                        .take(8)
-                                        .map(|t| t.name.clone())
-                                        .collect();
-                                    
-                                    if self.tag_suggestions.len() != prev_count {
-                                        self.tag_suggestion_idx = 0;
-                                    }
-                                } else {
-                                    self.tag_suggestions.clear();
-                                }
-                            }
-
-                            // 3. Render anchored dropdown
-                            if !self.tag_suggestions.is_empty() {
-                                let mut clicked_suggestion = None;
-                                egui::Area::new(egui::Id::new("tag_autocomplete"))
-                                    .fixed_pos(popup_pos)
-                                    .order(egui::Order::Foreground)
-                                    .interactable(true)
-                                    .show(ui.ctx(), |ui| {
-                                        egui::Frame::popup(ui.style()).show(ui, |ui| {
-                                            ui.set_min_width(res.rect.width());
-                                            for (i, suggestion) in self.tag_suggestions.iter().enumerate() {
-                                                let is_selected = i == self.tag_suggestion_idx;
-                                                let resp = ui.selectable_label(is_selected, suggestion);
-                                                if resp.clicked() {
-                                                    log::debug!("Tags: suggestion '{}' clicked", suggestion);
-                                                    clicked_suggestion = Some(suggestion.clone());
-                                                }
-                                            }
-                                        });
-                                    });
-                                
-                                if let Some(suggestion) = clicked_suggestion {
-                                    tag_to_commit = Some(suggestion);
-                                    self.tag_suggestions.clear();
-                                } else if ui.input(|i| i.pointer.any_pressed()) && !ui.memory(|m| m.has_focus(tag_field_id)) {
-                                    // Only clear if we clicked completely away from the dropdown AND focus is gone
-                                    self.tag_suggestions.clear();
-                                }
-                            }
-
-                            if ui.button("Add").clicked() {
-                                log::debug!("Tags: committing '{}' via Add button", self.tag_input);
-                                tag_to_commit = Some(self.tag_input.clone());
-                            }
-                        });
-
-                        ui.add_space(4.0);
-
-                        // Pill display with horizontal wrapping
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
-                            if self.current_image_tags.is_empty() {
-                                ui.label(egui::RichText::new("no tags").weak().italics());
-                            } else {
-                                for tag in &self.current_image_tags {
-                                    draw_tag_pill(ui, tag);
-                                }
-                            }
-                        });
-
-                        if let Some(tag) = tag_to_commit {
-                            if !tag.trim().is_empty() {
-                                let tag_clean = tag.trim().to_string();
-                                if !self.current_image_tags.iter().any(|t| t.name == tag_clean) {
-                                    if let Some(path) = &self.current_path {
-                                        if let (Some(db), Some(dir_str), Some(fname)) = (
-                                            &self.db,
-                                            path.parent().map(|p| p.to_string_lossy().into_owned()),
-                                            path.file_name().and_then(|n| n.to_str()).map(str::to_string),
-                                        ) {
-                                            if let Ok(dir) = db.upsert_directory_by_path(&dir_str) {
-                                                log::debug!("Tags: SAVING '{}' to DB for '{}'", tag_clean, fname);
-                                                let mut names: Vec<String> = self.current_image_tags.iter().map(|t| t.name.clone()).collect();
-                                                names.push(tag_clean);
-                                                if let Err(e) = db.set_image_tags(dir.id, &fname, &names) {
-                                                    log::error!("Tags: DB SAVE FAILED: {}", e);
-                                                }
-                                                self.refresh_record();
-                                                self.tag_input.clear();
-                                                self.tag_suggestions.clear();
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    log::debug!("Tags: tag '{}' already present, skipping save", tag_clean);
-                                    self.tag_input.clear();
-                                    self.tag_suggestions.clear();
-                                }
-                            }
-                        }
 
                         ui.separator();
 
@@ -1353,12 +1204,176 @@ impl RivettApp {
                             self.viewer.remap_max = adj.remap_max;
                         }
 
-                        if let Some(ref rec) = self.current_record {
-                            if let Some(ref note) = rec.note {
-                                label_kv(ui, "Note", note.clone());
+                        // ── Tags Section ─────────────────────────────────────
+                        let tag_field_id = egui::Id::new("tag_input_field");
+                        let mut tag_to_commit = None;
+
+                        // 1. Intercept navigation keys BEFORE TextEdit processes them
+                        let field_has_focus = ui.memory(|m| m.has_focus(tag_field_id));
+                        if field_has_focus && !self.tag_suggestions.is_empty() {
+                            ui.input_mut(|i| {
+                                if i.key_pressed(egui::Key::ArrowDown) {
+                                    self.tag_suggestion_idx = (self.tag_suggestion_idx + 1).min(self.tag_suggestions.len().saturating_sub(1));
+                                    i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
+                                } else if i.key_pressed(egui::Key::ArrowUp) {
+                                    self.tag_suggestion_idx = self.tag_suggestion_idx.saturating_sub(1);
+                                    i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
+                                } else if i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Tab) {
+                                    if let Some(s) = self.tag_suggestions.get(self.tag_suggestion_idx) {
+                                        log::debug!("Tags: suggestion '{}' accepted via keyboard (Enter/Tab)", s);
+                                        tag_to_commit = Some(s.clone());
+                                        i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                                        i.consume_key(egui::Modifiers::NONE, egui::Key::Tab);
+                                    }
+                                } else if i.key_pressed(egui::Key::Escape) {
+                                    log::debug!("Tags: suggestions cleared via Escape");
+                                    self.tag_suggestions.clear();
+                                    i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+                                }
+                            });
+                        } else if field_has_focus {
+                            // Standard enter to commit typed text
+                            ui.input_mut(|i| {
+                                if i.key_pressed(egui::Key::Enter) && !self.tag_input.trim().is_empty() {
+                                    log::debug!("Tags: custom tag '{}' committed via Enter", self.tag_input);
+                                    tag_to_commit = Some(self.tag_input.clone());
+                                    i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                                }
+                            });
+                        }
+
+                        ui.horizontal(|ui| {
+                            let text_edit = egui::TextEdit::singleline(&mut self.tag_input)
+                                .hint_text("Add tag…")
+                                .id(tag_field_id);
+                            
+                            let res = ui.add_sized([ui.available_width() - 40.0, 20.0], text_edit);
+                            let popup_pos = res.rect.left_bottom();
+
+                            // 2. Update suggestions based on current input
+                            if res.has_focus() && tag_to_commit.is_none() {
+                                if self.tag_input.len() >= 2 {
+                                    let prev_count = self.tag_suggestions.len();
+                                    self.tag_suggestions = self.all_tags.iter()
+                                        .filter(|t| t.name.to_lowercase().contains(&self.tag_input.to_lowercase()))
+                                        .filter(|t| !self.current_image_tags.iter().any(|ct| ct.name == t.name))
+                                        .take(8)
+                                        .map(|t| t.name.clone())
+                                        .collect();
+                                    
+                                    if self.tag_suggestions.len() != prev_count {
+                                        self.tag_suggestion_idx = 0;
+                                    }
+                                } else {
+                                    self.tag_suggestions.clear();
+                                }
+                            }
+
+                            // 3. Render anchored dropdown
+                            if !self.tag_suggestions.is_empty() {
+                                let mut clicked_suggestion = None;
+                                egui::Area::new(egui::Id::new("tag_autocomplete"))
+                                    .fixed_pos(popup_pos)
+                                    .order(egui::Order::Foreground)
+                                    .interactable(true)
+                                    .show(ui.ctx(), |ui| {
+                                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                            ui.set_min_width(res.rect.width());
+                                            for (i, suggestion) in self.tag_suggestions.iter().enumerate() {
+                                                let is_selected = i == self.tag_suggestion_idx;
+                                                let resp = ui.selectable_label(is_selected, suggestion);
+                                                if resp.clicked() {
+                                                    log::debug!("Tags: suggestion '{}' clicked", suggestion);
+                                                    clicked_suggestion = Some(suggestion.clone());
+                                                }
+                                            }
+                                        });
+                                    });
+                                
+                                if let Some(suggestion) = clicked_suggestion {
+                                    tag_to_commit = Some(suggestion);
+                                    self.tag_suggestions.clear();
+                                } else if ui.input(|i| i.pointer.any_pressed()) && !ui.memory(|m| m.has_focus(tag_field_id)) {
+                                    // Only clear if we clicked completely away from the dropdown AND focus is gone
+                                    self.tag_suggestions.clear();
+                                }
+                            }
+
+                            if ui.button("Add").clicked() {
+                                log::debug!("Tags: committing '{}' via Add button", self.tag_input);
+                                tag_to_commit = Some(self.tag_input.clone());
+                            }
+                        });
+
+                        ui.add_space(4.0);
+
+                        // Pill display with horizontal wrapping
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                            if self.current_image_tags.is_empty() {
+                                ui.label(egui::RichText::new("no tags").weak().italics());
+                            } else {
+                                for tag in &self.current_image_tags {
+                                    draw_tag_pill(ui, tag);
+                                }
+                            }
+                        });
+
+                        if let Some(tag) = tag_to_commit {
+                            if !tag.trim().is_empty() {
+                                let tag_clean = tag.trim().to_string();
+                                if !self.current_image_tags.iter().any(|t| t.name == tag_clean) {
+                                    if let Some(path) = &self.current_path {
+                                        if let (Some(db), Some(dir_str), Some(fname)) = (
+                                            &self.db,
+                                            path.parent().map(|p| p.to_string_lossy().into_owned()),
+                                            path.file_name().and_then(|n| n.to_str()).map(str::to_string),
+                                        ) {
+                                            if let Ok(dir) = db.upsert_directory_by_path(&dir_str) {
+                                                log::debug!("Tags: SAVING '{}' to DB for '{}'", tag_clean, fname);
+                                                let mut names: Vec<String> = self.current_image_tags.iter().map(|t| t.name.clone()).collect();
+                                                names.push(tag_clean);
+                                                if let Err(e) = db.set_image_tags(dir.id, &fname, &names) {
+                                                    log::error!("Tags: DB SAVE FAILED: {}", e);
+                                                }
+                                                self.refresh_record();
+                                                self.tag_input.clear();
+                                                self.tag_suggestions.clear();
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    log::debug!("Tags: tag '{}' already present, skipping save", tag_clean);
+                                    self.tag_input.clear();
+                                    self.tag_suggestions.clear();
+                                }
                             }
                         }
 
+                        ui.separator();
+
+                        // ── Notes Section ────────────────────────────────────
+                        ui.label(egui::RichText::new("Notes:").strong());
+                        let note_res = ui.add(
+                            egui::TextEdit::multiline(&mut self.note_buffer)
+                                .hint_text("Image notes…")
+                                .desired_width(f32::INFINITY)
+                                .desired_rows(1)
+                                .max_rows(25)
+                                .lock_focus(true)
+                        );
+                        if note_res.lost_focus() {
+                            if let (Some(ref db), Some(ref path), Some(ref rec)) = (&self.db, &self.current_path, &self.current_record) {
+                                let note_val = if self.note_buffer.trim().is_empty() { None } else { Some(self.note_buffer.trim()) };
+                                if let Err(e) = db.set_note(rec.directory_id, &rec.filename, note_val) {
+                                    self.toast(format!("Failed to save note: {e}"), ToastKind::Error);
+                                } else {
+                                    log::debug!("Notes: saved for '{}'", rec.filename);
+                                    self.refresh_record();
+                                }
+                            }
+                        }
+                        ui.separator();
                         if !self.metadata.is_empty() {
                             ui.separator();
                             ui.heading("Metadata");
@@ -1471,6 +1486,16 @@ impl RivettApp {
 
             ui.menu_button("Filter", |ui| {
                 ui.menu_button("Current folder", |ui| {
+                    if ui.button("Unrated").clicked() {
+                        let filter = RatingFilter {
+                            op:    RatingFilterOp::Unrated,
+                            value: 0,
+                            path_prefix: None,
+                        };
+                        self.apply_local_filter(Some(filter), crate::session::TagFilter::default(), ctx);
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     for r in 1..=5 {
                         let filter = RatingFilter {
                             op:    RatingFilterOp::AtLeast,
@@ -1487,6 +1512,17 @@ impl RivettApp {
                 let has_db = self.db.is_some();
                 ui.add_enabled_ui(has_db, |ui| {
                     ui.menu_button("Current folder & subfolders", |ui| {
+                        if ui.button("Unrated").clicked() {
+                            let prefix = self.listing.as_ref().map(|l| l.dir_path.clone());
+                            let filter = RatingFilter {
+                                op:    RatingFilterOp::Unrated,
+                                value: 0,
+                                path_prefix: prefix,
+                            };
+                            self.apply_global_filter(Some(filter), crate::session::TagFilter::default(), ctx);
+                            ui.close_menu();
+                        }
+                        ui.separator();
                         for r in 1..=5 {
                             let prefix = self.listing.as_ref().map(|l| l.dir_path.clone());
                             let filter = RatingFilter {
@@ -1502,6 +1538,16 @@ impl RivettApp {
                     });
 
                     ui.menu_button("Library", |ui| {
+                        if ui.button("Unrated").clicked() {
+                            let filter = RatingFilter {
+                                op:    RatingFilterOp::Unrated,
+                                value: 0,
+                                path_prefix: None,
+                            };
+                            self.apply_global_filter(Some(filter), crate::session::TagFilter::default(), ctx);
+                            ui.close_menu();
+                        }
+                        ui.separator();
                         for r in 1..=5 {
                             let filter = RatingFilter {
                                 op:    RatingFilterOp::AtLeast,
@@ -1578,18 +1624,6 @@ impl RivettApp {
             }
             if ui.add_enabled(has_image, egui::Button::new("Rotate Counter-Clockwise").shortcut_text("[")).clicked() {
                 self.rotate_current(false, ctx);
-                ui.close_menu();
-            }
-
-            ui.separator();
-
-            let has_metadata = !self.metadata.is_empty();
-            let is_stripped = self.current_path.as_ref().map(|p| self.session.is_metadata_stripped(p)).unwrap_or(false);
-            let strip_label = if is_stripped { "Unstage metadata strip" } else { "Strip metadata" };
-            if ui.add_enabled(has_image && has_metadata, egui::Button::new(strip_label).shortcut_text("M")).clicked() {
-                if let Some(path) = self.current_path.clone() {
-                    self.session.toggle_metadata_strip(path);
-                }
                 ui.close_menu();
             }
 
@@ -1676,6 +1710,18 @@ impl RivettApp {
                     .clicked()
                 {
                     self.utilities.open_tag_editor(self.db.as_ref());
+                    ui.close_menu();
+                }
+
+                ui.separator();
+
+                let has_metadata = !self.metadata.is_empty();
+                let is_stripped = self.current_path.as_ref().map(|p| self.session.is_metadata_stripped(p)).unwrap_or(false);
+                let strip_label = if is_stripped { "Unstage metadata strip" } else { "Strip metadata" };
+                if ui.add_enabled(has_image && has_metadata, egui::Button::new(strip_label)).clicked() {
+                    if let Some(path) = self.current_path.clone() {
+                        self.session.toggle_metadata_strip(path);
+                    }
                     ui.close_menu();
                 }
             });
