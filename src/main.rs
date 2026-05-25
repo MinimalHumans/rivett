@@ -1,9 +1,36 @@
-// On Windows this is a GUI application — suppress the console window entirely.
-#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+// On Windows this is a GUI application — suppress the console window entirely in release builds.
+// For release-local/debug, we might want the console.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use rivett::app::RivettApp;
 use rivett::settings::AppSettings;
 use std::path::PathBuf;
+use std::io::Write;
+
+fn init_logging() {
+    let mut builder = env_logger::Builder::from_default_env();
+    
+    // Also log to a file on Windows to help debugging GUI apps without a console
+    if cfg!(target_os = "windows") {
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("rivett.log") 
+        {
+            let file = std::sync::Arc::new(std::sync::Mutex::new(file));
+            builder.format(move |buf, record| {
+                let msg = format!("[{}] {} - {}\n", record.level(), record.target(), record.args());
+                let _ = buf.write_all(msg.as_bytes());
+                if let Ok(mut f) = file.lock() {
+                    let _ = f.write_all(msg.as_bytes());
+                }
+                Ok(())
+            });
+        }
+    }
+
+    builder.init();
+}
 
 fn parse_args() -> Option<PathBuf> {
     let args: Vec<String> = std::env::args().collect();
@@ -11,7 +38,8 @@ fn parse_args() -> Option<PathBuf> {
 }
 
 fn main() -> eframe::Result<()> {
-    env_logger::init();
+    init_logging();
+    log::info!("Rivett starting up...");
 
     let initial_image = parse_args();
     let settings = AppSettings::load();

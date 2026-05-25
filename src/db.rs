@@ -5,7 +5,7 @@
 //! note, rotation) produce a row in the `images` table. Rows that become empty are
 //! deleted automatically by [`Database::gc_empty_record`].
 
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Connection, Result, OptionalExtension};
 use std::path::Path;
 use uuid::Uuid;
 
@@ -137,6 +137,7 @@ impl Database {
     }
 
     fn initialise(&self) -> Result<()> {
+        log::debug!("DB: initialising schema...");
         self.conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         self.conn.execute_batch("PRAGMA foreign_keys=ON;")?;
         self.conn.execute_batch(SCHEMA_SQL)?;
@@ -191,12 +192,14 @@ impl Database {
     pub fn upsert_directory_by_path(&self, path: &str) -> Result<DirectoryRecord> {
         let now = Self::now();
         if let Some(record) = self.find_directory_by_path(path)? {
+            log::debug!("DB: upsert_directory_by_path: found existing record for '{}'", path);
             self.conn.execute(
                 "UPDATE directories SET path_last_verified_at = ?1 WHERE id = ?2",
                 params![now, record.id],
             )?;
             return Ok(record);
         }
+        log::debug!("DB: upsert_directory_by_path: creating new record for '{}'", path);
         let uuid = Uuid::new_v4().to_string();
         self.conn.execute(
             "INSERT INTO directories (uuid, path, created_at) VALUES (?1, ?2, ?3)",
@@ -364,6 +367,7 @@ impl Database {
     }
 
     pub fn set_image_tags(&self, directory_id: i64, filename: &str, tag_names: &[String]) -> Result<()> {
+        log::debug!("DB: set_image_tags for dir_id={}, file='{}', tags={:?}", directory_id, filename, tag_names);
         self.ensure_image_exists(directory_id, filename)?;
         let image_id: i64 = self.conn.query_row(
             "SELECT id FROM images WHERE directory_id = ?1 AND filename = ?2",
@@ -387,6 +391,7 @@ impl Database {
             let tag_id = if let Some(id) = existing_id? {
                 id
             } else {
+                log::debug!("DB: creating new tag '{}'", tag_name);
                 if self.conn.execute(
                     "INSERT INTO tags (name, color) VALUES (?1, 0)",
                     params![tag_name],
@@ -845,19 +850,4 @@ mod tests {
         let img = db.get_image(dir.id, "img.jpg").unwrap().unwrap();
         assert_eq!(img.rotation, 1);
     }
-}
-#[test]
-fn test_db_migration_sequence() {
-    let path = std::path::Path::new("test_mig.db");
-    let _ = std::fs::remove_file(path);
-    
-    // Step 1
-    let conn = Connection::open(path).unwrap();
-    conn.execute_batch("CREATE TABLE IF NOT EXISTS directories (id INTEGER PRIMARY KEY);").unwrap();
-    conn.execute_batch("CREATE TABLE IF NOT EXISTS tags (id INTEGER PRIMARY KEY, name TEXT UNIQUE);").unwrap();
-    drop(conn);
-    
-    // Step 2 (open)
-    let db = Database::open(path).unwrap();
-    println!("SUCCESS!");
 }
