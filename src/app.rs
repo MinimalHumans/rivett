@@ -962,7 +962,7 @@ impl RivettApp {
                             ui.spacing_mut().item_spacing.x = 4.0;
                             ui.label(egui::RichText::new(format!("{key}:")).strong());
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.add(egui::Label::new(&value).truncate())
+                                ui.add(egui::Label::new(&value).selectable(true).truncate())
                                     .on_hover_text(&value);
                             });
                         });
@@ -1433,11 +1433,10 @@ impl RivettApp {
                                     ))
                                     .show(ui, |ui| {
                                         ui.add(
-                                            egui::TextEdit::multiline(
-                                                &mut entry.value
+                                            egui::Label::new(
+                                                egui::RichText::new(&entry.value).monospace()
                                             )
-                                            .desired_width(f32::INFINITY)
-                                            .font(egui::TextStyle::Monospace),
+                                            .selectable(true)
                                         );
                                     });
                                 } else {
