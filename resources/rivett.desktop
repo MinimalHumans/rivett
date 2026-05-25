@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Rivett
+Comment=Fast image vetting and sorting tool
+Exec=rivett %F
+Icon=rivett
+Type=Application
+Categories=Graphics;Viewer;
+MimeType=image/jpeg;image/png;image/webp;image/bmp;image/tiff;image/gif;image/x-exr;image/svg+xml;image/x-canon-cr2;image/x-canon-cr3;image/x-sony-arw;image/x-nikon-nef;image/x-fuji-raf;image/x-adobe-dng;
+Terminal=false
+StartupWMClass=rivett

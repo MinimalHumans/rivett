@@ -5,18 +5,27 @@ authors     = ["Jesse Kretschmer"]
 edition     = "2021"
 description = "Rust Image Vetting Tool — fast, keyboard-driven image viewer"
 license     = "MIT"
+homepage    = "https://github.com/krets/rivett"
+repository  = "https://github.com/krets/rivett"
 
 [package.metadata.bundle]
 name = "rivett"
 identifier = "com.rivett.rivett"
 icon = ["resources/icon.png"]
-resources = []
+resources = ["resources/rivett.desktop", "resources/com.rivett.rivett.metainfo.xml"]
+authors = ["Jesse Kretschmer <jesse@krets.com>"]
+license = "MIT"
 copyright = "Copyright © 2026 Jesse Kretschmer (Minimal Humans)"
-category = "Graphics and Design"
-short_description = "Fast image vetting tool."
+category = "Graphics"
+short_description = "Fast, keyboard-driven image vetting tool."
 long_description = """
-Rivett is a fast, keyboard-driven image viewer designed for quick sorting and vetting of large image collections.
+Rivett is a high-performance image vetting tool designed for photographers and creatives who need to quickly sort through large collections of images. It features a keyboard-centric workflow, fast image loading, and a clean interface.
 """
+
+[package.metadata.bundle.deb]
+maintainer = "Jesse Kretschmer <jesse@krets.com>"
+section = "graphics"
+priority = "optional"
 
 [[bin]]
 name = "rivett"
