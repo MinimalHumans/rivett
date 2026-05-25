@@ -37,13 +37,20 @@ CREATE TABLE IF NOT EXISTS images (
     updated_at          INTEGER NOT NULL,
     UNIQUE(directory_id, filename)
 );
-
 CREATE TABLE IF NOT EXISTS tags (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    name    TEXT    NOT NULL UNIQUE
+    name    TEXT    NOT NULL UNIQUE,
+    color   INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS image_tags (
+...
+pub struct TagRecord {
+    pub id:    i64,
+    pub name:  String,
+    pub color: u32,
+}
+
     image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
     tag_id      INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
     PRIMARY KEY (image_id, tag_id)
@@ -90,6 +97,13 @@ pub struct ImageRecord {
     pub updated_at:       i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagRecord {
+    pub id:    i64,
+    pub name:  String,
+    pub color: u32,
+}
+
 // ---------------------------------------------------------------------------
 // Database
 // ---------------------------------------------------------------------------
@@ -127,15 +141,30 @@ impl Database {
         self.conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         self.conn.execute_batch("PRAGMA foreign_keys=ON;")?;
         self.conn.execute_batch(SCHEMA_SQL)?;
+
+        // Migration: add color column to tags if missing
+        let has_color = {
+            let mut stmt = self.conn.prepare("PRAGMA table_info(tags)")?;
+            let mut rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            rows.any(|r| r.as_deref() == Ok("color"))
+        };
+        if !has_color {
+            let _ = self.conn.execute("ALTER TABLE tags ADD COLUMN color INTEGER NOT NULL DEFAULT 0", []);
+        }
+
         Ok(())
     }
 
     fn migrate(&self) -> Result<()> {
-        // Add rotation column if it doesn't exist
-        let _ = self.conn.execute(
-            "ALTER TABLE images ADD COLUMN rotation INTEGER NOT NULL DEFAULT 0",
-            [],
-        );
+        // Add rotation column to images if missing
+        let has_rotation = {
+            let mut stmt = self.conn.prepare("PRAGMA table_info(images)")?;
+            let mut rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            rows.any(|r| r.as_deref() == Ok("rotation"))
+        };
+        if !has_rotation {
+            let _ = self.conn.execute("ALTER TABLE images ADD COLUMN rotation INTEGER NOT NULL DEFAULT 0", []);
+        }
         Ok(())
     }
 
@@ -267,25 +296,33 @@ impl Database {
 
     // ── Tags ─────────────────────────────────────────────────────────────
 
-    pub fn get_all_tags(&self) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare("SELECT name FROM tags ORDER BY name")?;
-        let tags: Result<Vec<String>> = stmt.query_map([], |row| row.get(0))?.collect();
+    pub fn get_all_tags(&self) -> Result<Vec<TagRecord>> {
+        let mut stmt = self.conn.prepare("SELECT id, name, color FROM tags ORDER BY name")?;
+        let tags: Result<Vec<TagRecord>> = stmt.query_map([], |row| Ok(TagRecord {
+            id:    row.get(0)?,
+            name:  row.get(1)?,
+            color: row.get::<_, i64>(2)? as u32,
+        }))?.collect();
         tags
     }
 
-    pub fn get_image_tags(&self, directory_id: i64, filename: &str) -> Result<Vec<String>> {
+    pub fn get_image_tags(&self, directory_id: i64, filename: &str) -> Result<Vec<TagRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT t.name FROM tags t
+            "SELECT t.id, t.name, t.color FROM tags t
              JOIN image_tags it ON t.id = it.tag_id
              JOIN images i ON it.image_id = i.id
              WHERE i.directory_id = ?1 AND i.filename = ?2
              ORDER BY t.name",
         )?;
-        let tags: Result<Vec<String>> = stmt.query_map(params![directory_id, filename], |row| row.get(0))?.collect();
+        let tags: Result<Vec<TagRecord>> = stmt.query_map(params![directory_id, filename], |row| Ok(TagRecord {
+            id:    row.get(0)?,
+            name:  row.get(1)?,
+            color: row.get::<_, i64>(2)? as u32,
+        }))?.collect();
         tags
     }
 
-    pub fn set_image_tags(&self, directory_id: i64, filename: &str, tags: &[String]) -> Result<()> {
+    pub fn set_image_tags(&self, directory_id: i64, filename: &str, tag_names: &[String]) -> Result<()> {
         self.ensure_image_exists(directory_id, filename)?;
         let image_id: i64 = self.conn.query_row(
             "SELECT id FROM images WHERE directory_id = ?1 AND filename = ?2",
@@ -295,19 +332,33 @@ impl Database {
 
         self.conn.execute("DELETE FROM image_tags WHERE image_id = ?1", params![image_id])?;
 
-        for tag_name in tags {
+        for tag_name in tag_names {
             let tag_name = tag_name.trim();
             if tag_name.is_empty() { continue; }
 
-            self.conn.execute(
-                "INSERT OR IGNORE INTO tags (name) VALUES (?1)",
-                params![tag_name],
-            )?;
-            let tag_id: i64 = self.conn.query_row(
+            // Check if tag exists, otherwise create with color
+            let existing_id: Result<Option<i64>> = self.conn.query_row(
                 "SELECT id FROM tags WHERE name = ?1",
                 params![tag_name],
-                |row| row.get(0),
-            )?;
+                |row| Ok(Some(row.get(0)?)),
+            ).or_else(|e| if matches!(e, rusqlite::Error::QueryReturnedNoRows) { Ok(None) } else { Err(e) });
+
+            let tag_id = if let Some(id) = existing_id? {
+                id
+            } else {
+                self.conn.execute(
+                    "INSERT INTO tags (name, color) VALUES (?1, 0)",
+                    params![tag_name],
+                )?;
+                let id = self.conn.last_insert_rowid();
+                let color = color_from_id(id as u32);
+                self.conn.execute(
+                    "UPDATE tags SET color = ?1 WHERE id = ?2",
+                    params![color as i64, id],
+                )?;
+                id
+            };
+
             self.conn.execute(
                 "INSERT OR IGNORE INTO image_tags (image_id, tag_id) VALUES (?1, ?2)",
                 params![image_id, tag_id],
@@ -320,6 +371,14 @@ impl Database {
         )?;
 
         self.gc_empty_record(directory_id, filename)
+    }
+
+    pub fn update_tag_color(&self, tag_id: i64, color: u32) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tags SET color = ?1 WHERE id = ?2",
+            params![color as i64, tag_id],
+        )?;
+        Ok(())
     }
 
     pub fn delete_tag(&self, name: &str) -> Result<()> {
@@ -369,6 +428,39 @@ impl Database {
         )?;
         Ok(())
     }
+}
+
+// ── Color Helpers ────────────────────────────────────────────────────────────
+
+pub fn color_from_id(id: u32) -> u32 {
+    let hue = (id as f32 * 137.508) % 360.0; // golden angle in degrees
+    let s = 0.55_f32;
+    let v = 0.80_f32;
+    let color = hsv_to_rgb(hue, s, v);
+    // Store as 0xRRGGBB
+    ((color[0] as u32) << 16) | ((color[1] as u32) << 8) | (color[2] as u32)
+}
+
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [u8; 3] {
+    let c = v * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = v - c;
+    let (r, g, b) = match h as u32 {
+        0..=59   => (c, x, 0.0),
+        60..=119 => (x, c, 0.0),
+        120..=179 => (0.0, c, x),
+        180..=239 => (0.0, x, c),
+        240..=299 => (x, 0.0, c),
+        _         => (c, 0.0, x),
+    };
+    [
+        ((r + m) * 255.0) as u8,
+        ((g + m) * 255.0) as u8,
+        ((b + m) * 255.0) as u8,
+    ]
+}
+
+impl Database {
 
     // ── Meta views ────────────────────────────────────────────────────────
 

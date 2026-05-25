@@ -20,7 +20,7 @@ pub struct UtilitiesState {
 
 #[derive(Default)]
 struct TagEditorState {
-    tags:              Vec<String>,
+    tags:              Vec<crate::db::TagRecord>,
     rename_old:        String,
     rename_new:        String,
     confirm_delete:    Option<String>,
@@ -75,21 +75,21 @@ impl UtilitiesState {
                         let mut tag_to_delete = None;
                         for tag in &state.tags {
                             ui.horizontal(|ui| {
-                                ui.label(tag);
+                                ui.label(&tag.name);
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     if ui.button("Rename").clicked() {
-                                        state.rename_old = tag.clone();
-                                        state.rename_new = tag.clone();
+                                        state.rename_old = tag.name.clone();
+                                        state.rename_new = tag.name.clone();
                                     }
                                     if ui.button("Delete").clicked() {
-                                        tag_to_delete = Some(tag.clone());
+                                        tag_to_delete = Some(tag.name.clone());
                                     }
                                 });
                             });
                         }
 
-                        if let Some(tag) = tag_to_delete {
-                            state.confirm_delete = Some(tag);
+                        if let Some(tag_name) = tag_to_delete {
+                            state.confirm_delete = Some(tag_name);
                         }
                     });
 

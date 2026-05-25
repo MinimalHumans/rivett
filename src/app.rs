@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 #[cfg(target_os = "windows")]
 use chrono;
 
-use crate::db::{Database, ImageRecord};
+use crate::db::{Database, ImageRecord, TagRecord};
 use std::path::Path;
 use crate::image_loader::{ImageCache, DirectoryListing};
 use crate::metadata::{read_metadata, MetaEntry};
@@ -43,9 +43,11 @@ pub struct RivettApp {
     // UI state
     current_path:    Option<std::path::PathBuf>,
     current_record:  Option<ImageRecord>,
-    current_image_tags: Vec<String>,
-    all_tags:        Vec<String>,
+    current_image_tags: Vec<crate::db::TagRecord>,
+    all_tags:        Vec<crate::db::TagRecord>,
     tag_input:       String,
+    tag_suggestions: Vec<String>,
+    tag_suggestion_idx: usize,
     metadata:        Vec<MetaEntry>,
 
     show_info_panel: bool,
@@ -101,6 +103,8 @@ impl RivettApp {
             current_image_tags: vec![],
             all_tags:        vec![],
             tag_input:       String::new(),
+            tag_suggestions: vec![],
+            tag_suggestion_idx: 0,
             metadata:        vec![],
             show_info_panel: settings.show_info_panel,
             show_help:       false,
@@ -692,8 +696,15 @@ impl RivettApp {
         }
 
         if input.key_pressed(Key::T) {
-            self.show_info_panel = true;
-            ctx.memory_mut(|m| m.request_focus(egui::Id::new("tag_input_field")));
+            let tag_field_id = egui::Id::new("tag_input_field");
+            if !ctx.memory(|m| m.has_focus(tag_field_id)) {
+                self.show_info_panel = true;
+                ctx.memory_mut(|m| m.request_focus(tag_field_id));
+                // Consume the 't' so it doesn't end up in the field
+                ctx.input_mut(|i| {
+                    i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t == "t" || t == "T"));
+                });
+            }
         }
 
         if input.modifiers.is_none() {
@@ -1016,18 +1027,9 @@ impl RivettApp {
 
                         ui.separator();
 
-                        // ── Tags ─────────────────────────────────────────────
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("Tags:").strong());
-                            if !self.current_image_tags.is_empty() {
-                                ui.label(self.current_image_tags.join(", "));
-                            } else {
-                                ui.label(egui::RichText::new("none").weak().italics());
-                            }
-                        });
-
+                        // ── Tags Section ─────────────────────────────────────
                         let tag_field_id = egui::Id::new("tag_input_field");
-                        let mut tag_to_add = None;
+                        let mut tag_to_commit = None;
 
                         ui.horizontal(|ui| {
                             let text_edit = egui::TextEdit::singleline(&mut self.tag_input)
@@ -1035,47 +1037,113 @@ impl RivettApp {
                                 .id(tag_field_id);
                             
                             let res = ui.add_sized([ui.available_width() - 40.0, 20.0], text_edit);
-                            
-                            if res.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                                tag_to_add = Some(self.tag_input.clone());
+                            let popup_pos = res.rect.left_bottom();
+
+                            if res.has_focus() {
+                                // 1. Handle keyboard events for autocomplete navigation
+                                let (suggestions_changed, suggestions_cleared) = ui.input(|i| {
+                                    let mut changed = false;
+                                    let mut cleared = false;
+
+                                    if !self.tag_suggestions.is_empty() {
+                                        if i.key_pressed(egui::Key::ArrowDown) {
+                                            self.tag_suggestion_idx = (self.tag_suggestion_idx + 1).min(self.tag_suggestions.len().saturating_sub(1));
+                                            changed = true;
+                                        }
+                                        if i.key_pressed(egui::Key::ArrowUp) {
+                                            self.tag_suggestion_idx = self.tag_suggestion_idx.saturating_sub(1);
+                                            changed = true;
+                                        }
+                                        if i.key_pressed(egui::Key::Escape) {
+                                            self.tag_suggestions.clear();
+                                            cleared = true;
+                                        }
+                                        if i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Tab) {
+                                            if let Some(s) = self.tag_suggestions.get(self.tag_suggestion_idx) {
+                                                tag_to_commit = Some(s.clone());
+                                                self.tag_suggestions.clear();
+                                                cleared = true;
+                                            }
+                                        }
+                                    } else {
+                                        if i.key_pressed(egui::Key::Enter) && !self.tag_input.trim().is_empty() {
+                                            tag_to_commit = Some(self.tag_input.clone());
+                                        }
+                                        if i.key_pressed(egui::Key::Escape) {
+                                            res.surrender_focus();
+                                        }
+                                    }
+                                    (changed, cleared)
+                                });
+
+                                // 2. Update suggestions based on input (threshold: 2 chars)
+                                if !suggestions_changed && !suggestions_cleared {
+                                    if self.tag_input.len() >= 2 {
+                                        let prev_suggestions = self.tag_suggestions.clone();
+                                        self.tag_suggestions = self.all_tags.iter()
+                                            .filter(|t| t.name.to_lowercase().contains(&self.tag_input.to_lowercase()))
+                                            .filter(|t| !self.current_image_tags.iter().any(|ct| ct.name == t.name))
+                                            .take(8)
+                                            .map(|t| t.name.clone())
+                                            .collect();
+                                        
+                                        if self.tag_suggestions != prev_suggestions {
+                                            self.tag_suggestion_idx = 0;
+                                        }
+                                    } else {
+                                        self.tag_suggestions.clear();
+                                    }
+                                }
+
+                                // 3. Render anchored dropdown
+                                if !self.tag_suggestions.is_empty() {
+                                    let mut selected_suggestion = None;
+
+                                    egui::Area::new(egui::Id::new("tag_autocomplete"))
+                                        .fixed_pos(popup_pos)
+                                        .order(egui::Order::Foreground)
+                                        .show(ui.ctx(), |ui| {
+                                            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                                ui.set_min_width(res.rect.width());
+                                                for (i, suggestion) in self.tag_suggestions.iter().enumerate() {
+                                                    let is_selected = i == self.tag_suggestion_idx;
+                                                    if ui.selectable_label(is_selected, suggestion).clicked() {
+                                                        selected_suggestion = Some(suggestion.clone());
+                                                    }
+                                                }
+                                            });
+                                        });
+                                    
+                                    if let Some(suggestion) = selected_suggestion {
+                                        tag_to_commit = Some(suggestion);
+                                        self.tag_suggestions.clear();
+                                    }
+                                }
                             }
 
                             if ui.button("Add").clicked() {
-                                tag_to_add = Some(self.tag_input.clone());
+                                tag_to_commit = Some(self.tag_input.clone());
                             }
                         });
 
-                        // Simple auto-complete tooltip/dropdown
-                        if ui.memory(|m| m.has_focus(tag_field_id)) && !self.tag_input.is_empty() {
-                            let suggestions: Vec<_> = self.all_tags.iter()
-                                .filter(|t| t.to_lowercase().contains(&self.tag_input.to_lowercase()))
-                                .filter(|t| !self.current_image_tags.contains(t))
-                                .take(5)
-                                .collect();
+                        ui.add_space(4.0);
 
-                            if !suggestions.is_empty() {
-                                egui::show_tooltip_at_pointer(ui.ctx(), ui.layer_id(), egui::Id::new("tag_suggest"), |ui| {
-                                    ui.label(egui::RichText::new("Suggestions (Enter to add first)").small().weak());
-                                    for &s in &suggestions {
-                                        if ui.selectable_label(false, s).clicked() {
-                                            tag_to_add = Some(s.clone());
-                                        }
-                                    }
-                                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                                        if let Some(&first) = suggestions.first() {
-                                            tag_to_add = Some(first.clone());
-                                        }
-                                    }
-                                });
+                        // Pill display with horizontal wrapping
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                            if self.current_image_tags.is_empty() {
+                                ui.label(egui::RichText::new("no tags").weak().italics());
+                            } else {
+                                for tag in &self.current_image_tags {
+                                    draw_tag_pill(ui, tag);
+                                }
                             }
-                        }
+                        });
 
-                        if let Some(tag) = tag_to_add {
+                        if let Some(tag) = tag_to_commit {
                             if !tag.trim().is_empty() {
-                                let mut new_tags = self.current_image_tags.clone();
                                 let tag_clean = tag.trim().to_string();
-                                if !new_tags.contains(&tag_clean) {
-                                    new_tags.push(tag_clean);
+                                if !self.current_image_tags.iter().any(|t| t.name == tag_clean) {
                                     if let Some(path) = &self.current_path {
                                         if let (Some(db), Some(dir_str), Some(fname)) = (
                                             &self.db,
@@ -1083,12 +1151,18 @@ impl RivettApp {
                                             path.file_name().and_then(|n| n.to_str()).map(str::to_string),
                                         ) {
                                             if let Ok(dir) = db.upsert_directory_by_path(&dir_str) {
-                                                let _ = db.set_image_tags(dir.id, &fname, &new_tags);
+                                                let mut names: Vec<String> = self.current_image_tags.iter().map(|t| t.name.clone()).collect();
+                                                names.push(tag_clean);
+                                                let _ = db.set_image_tags(dir.id, &fname, &names);
                                                 self.refresh_record();
                                                 self.tag_input.clear();
+                                                self.tag_suggestions.clear();
                                             }
                                         }
                                     }
+                                } else {
+                                    self.tag_input.clear();
+                                    self.tag_suggestions.clear();
                                 }
                             }
                         }
@@ -1448,11 +1522,11 @@ impl RivettApp {
                 } else {
                     let tags = self.all_tags.clone();
                     for tag in &tags {
-                        let mut is_filtered = self.session.tag_filter.tags.contains(tag);
-                        if ui.checkbox(&mut is_filtered, tag).changed() {
+                        let mut is_filtered = self.session.tag_filter.tags.contains(&tag.name);
+                        if ui.checkbox(&mut is_filtered, &tag.name).changed() {
                             let mut tf = self.session.tag_filter.clone();
-                            if is_filtered { tf.tags.insert(tag.clone()); }
-                            else { tf.tags.remove(tag); }
+                            if is_filtered { tf.tags.insert(tag.name.clone()); }
+                            else { tf.tags.remove(&tag.name); }
                             let rf = self.session.rating_filter.clone();
                             self.apply_local_filter(rf, tf, ctx);
                         }
@@ -2199,4 +2273,39 @@ impl raw_window_handle::HasDisplayHandle for OwnedWindowHandle {
             ))
         }
     }
+}
+
+// ── Tag UI Helpers ───────────────────────────────────────────────────────────
+
+fn text_color_for_bg(bg: egui::Color32) -> egui::Color32 {
+    let perceived = (0.299 * bg.r() as f32
+        + 0.587 * bg.g() as f32
+        + 0.114 * bg.b() as f32) / 255.0;
+
+    if perceived > 0.5 {
+        egui::Color32::from_rgb(20, 20, 20)   // dark text on light bg
+    } else {
+        egui::Color32::from_rgb(240, 240, 240) // light text on dark bg
+    }
+}
+
+fn draw_tag_pill(ui: &mut egui::Ui, tag: &TagRecord) {
+    let padding = egui::vec2(6.0, 2.0);
+    let font_id = egui::FontId::proportional(12.0);
+    
+    // We need a temporary painter to measure the text, or just use ui.fonts()
+    let galley = ui.fonts(|f| f.layout_no_wrap(tag.name.clone(), font_id.clone(), egui::Color32::WHITE));
+    let size = galley.size() + padding * 2.0;
+    
+    let (rect, _response) = ui.allocate_at_least(size, egui::Sense::hover());
+    
+    let bg_color = egui::Color32::from_rgb(
+        ((tag.color >> 16) & 0xFF) as u8,
+        ((tag.color >> 8) & 0xFF) as u8,
+        (tag.color & 0xFF) as u8,
+    );
+    let fg_color = text_color_for_bg(bg_color);
+    
+    ui.painter().rect_filled(rect, 4.0, bg_color);
+    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, &tag.name, font_id, fg_color);
 }

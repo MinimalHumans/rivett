@@ -61,7 +61,8 @@ impl DirectoryListing {
 
                         if !tag_filter.is_empty() {
                             let Ok(tags) = db.get_image_tags(d_rec.id, fname) else { return false; };
-                            if !tag_filter.matches(&tags) { return false; }
+                            let names: Vec<_> = tags.iter().map(|t| t.name.clone()).collect();
+                            if !tag_filter.matches(&names) { return false; }
                         }
 
                         true
