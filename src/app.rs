@@ -43,7 +43,11 @@ pub struct RivettApp {
     // UI state
     current_path:    Option<std::path::PathBuf>,
     current_record:  Option<ImageRecord>,
+    current_image_tags: Vec<String>,
+    all_tags:        Vec<String>,
+    tag_input:       String,
     metadata:        Vec<MetaEntry>,
+
     show_info_panel: bool,
     show_help:       bool,
     toast:           Option<Toast>,
@@ -94,6 +98,9 @@ impl RivettApp {
             gamma_renderer:  None,
             current_path:    None,
             current_record:  None,
+            current_image_tags: vec![],
+            all_tags:        vec![],
+            tag_input:       String::new(),
             metadata:        vec![],
             show_info_panel: settings.show_info_panel,
             show_help:       false,
@@ -127,7 +134,7 @@ impl RivettApp {
             if let Some(dir) = path.parent() {
                 let sort   = self.session_sort_order();
                 let db     = self.db.as_ref();
-                match DirectoryListing::scan(dir, sort, None, db) {
+                match DirectoryListing::scan(dir, sort, None, crate::session::TagFilter::default(), db) {
                     Ok(mut listing) => {
                         listing.seek_to(&path);
                         self.listing = Some(listing);
@@ -226,8 +233,16 @@ impl RivettApp {
             let dir_str = path.parent()?.to_string_lossy();
             let fname   = path.file_name()?.to_str()?;
             let dir     = db.find_directory_by_path(&dir_str).ok()??;
+            
+            self.current_image_tags = db.get_image_tags(dir.id, fname).unwrap_or_default();
+            self.all_tags = db.get_all_tags().unwrap_or_default();
+            
             db.get_image(dir.id, fname).ok()?
         });
+        if self.current_record.is_none() {
+            self.current_image_tags.clear();
+            self.all_tags = self.db.as_ref().and_then(|db| db.get_all_tags().ok()).unwrap_or_default();
+        }
     }
 
     // ── Navigation ────────────────────────────────────────────────────────
@@ -288,7 +303,7 @@ impl RivettApp {
 
         let sort = self.session_sort_order();
         let db   = self.db.as_ref();
-        match DirectoryListing::scan(parent, sort, None, db) {
+        match DirectoryListing::scan(parent, sort, None, crate::session::TagFilter::default(), db) {
             Ok(mut listing) => {
                 listing.go_to_first();
                 self.listing = Some(listing);
@@ -413,7 +428,7 @@ impl RivettApp {
         self.session.flush();
         if let Some(dir) = self.listing.as_ref().map(|l| l.dir_path.clone()) {
             let sort = self.session_sort_order();
-            if let Ok(mut fresh) = DirectoryListing::scan(&dir, sort, None, self.db.as_ref()) {
+            if let Ok(mut fresh) = DirectoryListing::scan(&dir, sort, None, crate::session::TagFilter::default(), self.db.as_ref()) {
                 if let Some(ref cur) = self.current_path.clone() {
                     fresh.seek_to(cur);
                 }
@@ -674,6 +689,11 @@ impl RivettApp {
             self.show_info_panel = !self.show_info_panel;
             self.settings.show_info_panel = self.show_info_panel;
             let _ = self.settings.save();
+        }
+
+        if input.key_pressed(Key::T) {
+            self.show_info_panel = true;
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new("tag_input_field")));
         }
 
         if input.modifiers.is_none() {
@@ -996,6 +1016,85 @@ impl RivettApp {
 
                         ui.separator();
 
+                        // ── Tags ─────────────────────────────────────────────
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Tags:").strong());
+                            if !self.current_image_tags.is_empty() {
+                                ui.label(self.current_image_tags.join(", "));
+                            } else {
+                                ui.label(egui::RichText::new("none").weak().italics());
+                            }
+                        });
+
+                        let tag_field_id = egui::Id::new("tag_input_field");
+                        let mut tag_to_add = None;
+
+                        ui.horizontal(|ui| {
+                            let text_edit = egui::TextEdit::singleline(&mut self.tag_input)
+                                .hint_text("Add tag…")
+                                .id(tag_field_id);
+                            
+                            let res = ui.add_sized([ui.available_width() - 40.0, 20.0], text_edit);
+                            
+                            if res.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                tag_to_add = Some(self.tag_input.clone());
+                            }
+
+                            if ui.button("Add").clicked() {
+                                tag_to_add = Some(self.tag_input.clone());
+                            }
+                        });
+
+                        // Simple auto-complete tooltip/dropdown
+                        if ui.memory(|m| m.has_focus(tag_field_id)) && !self.tag_input.is_empty() {
+                            let suggestions: Vec<_> = self.all_tags.iter()
+                                .filter(|t| t.to_lowercase().contains(&self.tag_input.to_lowercase()))
+                                .filter(|t| !self.current_image_tags.contains(t))
+                                .take(5)
+                                .collect();
+
+                            if !suggestions.is_empty() {
+                                egui::show_tooltip_at_pointer(ui.ctx(), ui.layer_id(), egui::Id::new("tag_suggest"), |ui| {
+                                    ui.label(egui::RichText::new("Suggestions (Enter to add first)").small().weak());
+                                    for &s in &suggestions {
+                                        if ui.selectable_label(false, s).clicked() {
+                                            tag_to_add = Some(s.clone());
+                                        }
+                                    }
+                                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                        if let Some(&first) = suggestions.first() {
+                                            tag_to_add = Some(first.clone());
+                                        }
+                                    }
+                                });
+                            }
+                        }
+
+                        if let Some(tag) = tag_to_add {
+                            if !tag.trim().is_empty() {
+                                let mut new_tags = self.current_image_tags.clone();
+                                let tag_clean = tag.trim().to_string();
+                                if !new_tags.contains(&tag_clean) {
+                                    new_tags.push(tag_clean);
+                                    if let Some(path) = &self.current_path {
+                                        if let (Some(db), Some(dir_str), Some(fname)) = (
+                                            &self.db,
+                                            path.parent().map(|p| p.to_string_lossy().into_owned()),
+                                            path.file_name().and_then(|n| n.to_str()).map(str::to_string),
+                                        ) {
+                                            if let Ok(dir) = db.upsert_directory_by_path(&dir_str) {
+                                                let _ = db.set_image_tags(dir.id, &fname, &new_tags);
+                                                self.refresh_record();
+                                                self.tag_input.clear();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        ui.separator();
+
                         let mut adj = self.session.adjustments_for(&path).unwrap_or_default();
                         let mut changed = false;
                         let shift_held = ui.input(|i| i.modifiers.shift);
@@ -1225,11 +1324,12 @@ impl RivettApp {
             });
     }
 
-    fn apply_global_filter(&mut self, filter: RatingFilter, ctx: &Context) {
+    fn apply_global_filter(&mut self, rf: Option<RatingFilter>, tf: crate::session::TagFilter, ctx: &Context) {
         let Some(ref db) = self.db else { return };
-        match DirectoryListing::scan_global(db, &filter) {
+        match DirectoryListing::scan_global(db, rf.as_ref(), &tf) {
             Ok(listing) => {
-                self.session.rating_filter = Some(filter);
+                self.session.rating_filter = rf;
+                self.session.tag_filter    = tf;
                 self.listing = Some(listing);
                 self.load_current(ctx, false);
             }
@@ -1248,10 +1348,12 @@ impl RivettApp {
         }
     }
 
-    fn apply_local_filter(&mut self, filter: Option<RatingFilter>, ctx: &Context) {
-        self.session.rating_filter = filter.clone();
+    fn apply_local_filter(&mut self, rf: Option<RatingFilter>, tf: crate::session::TagFilter, ctx: &Context) {
+        self.session.rating_filter = rf.clone();
+        self.session.tag_filter    = tf.clone();
         if let Some(ref mut listing) = self.listing {
-            listing.rating_filter = filter;
+            listing.rating_filter = rf;
+            listing.tag_filter    = tf;
         }
         self.refresh_listing(ctx);
     }
@@ -1296,7 +1398,7 @@ impl RivettApp {
                             path_prefix: None,
                         };
                         if ui.button(format!("At least ★ {r}")).clicked() {
-                            self.apply_local_filter(Some(filter), ctx);
+                            self.apply_local_filter(Some(filter), crate::session::TagFilter::default(), ctx);
                             ui.close_menu();
                         }
                     }
@@ -1313,7 +1415,7 @@ impl RivettApp {
                                 path_prefix: prefix,
                             };
                             if ui.button(format!("At least ★ {r}")).clicked() {
-                                self.apply_global_filter(filter, ctx);
+                                self.apply_global_filter(Some(filter), crate::session::TagFilter::default(), ctx);
                                 ui.close_menu();
                             }
                         }
@@ -1327,7 +1429,7 @@ impl RivettApp {
                                 path_prefix: None,
                             };
                             if ui.button(format!("At least ★ {r}")).clicked() {
-                                self.apply_global_filter(filter, ctx);
+                                self.apply_global_filter(Some(filter), crate::session::TagFilter::default(), ctx);
                                 ui.close_menu();
                             }
                         }
@@ -1335,8 +1437,26 @@ impl RivettApp {
                 });
 
                 if ui.button("Clear Filter").clicked() {
-                    self.apply_local_filter(None, ctx);
+                    self.apply_local_filter(None, crate::session::TagFilter::default(), ctx);
                     ui.close_menu();
+                }
+            });
+
+            ui.menu_button("Tags", |ui| {
+                if self.all_tags.is_empty() {
+                    ui.label(egui::RichText::new("No tags in library").small().weak());
+                } else {
+                    let tags = self.all_tags.clone();
+                    for tag in &tags {
+                        let mut is_filtered = self.session.tag_filter.tags.contains(tag);
+                        if ui.checkbox(&mut is_filtered, tag).changed() {
+                            let mut tf = self.session.tag_filter.clone();
+                            if is_filtered { tf.tags.insert(tag.clone()); }
+                            else { tf.tags.remove(tag); }
+                            let rf = self.session.rating_filter.clone();
+                            self.apply_local_filter(rf, tf, ctx);
+                        }
+                    }
                 }
             });
 
@@ -1469,6 +1589,13 @@ impl RivettApp {
                     .clicked()
                 {
                     self.utilities.open_db_health(self.db.as_ref());
+                    ui.close_menu();
+                }
+
+                if ui.add_enabled(self.db.is_some(), egui::Button::new("Tag Manager…"))
+                    .clicked()
+                {
+                    self.utilities.open_tag_editor(self.db.as_ref());
                     ui.close_menu();
                 }
             });

@@ -143,6 +143,31 @@ impl RatingFilter {
 }
 
 // ---------------------------------------------------------------------------
+// Tag filter
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct TagFilter {
+    pub tags: HashSet<String>,
+}
+
+impl TagFilter {
+    pub fn is_empty(&self) -> bool {
+        self.tags.is_empty()
+    }
+
+    pub fn matches(&self, image_tags: &[String]) -> bool {
+        if self.is_empty() { return true; }
+        for tag in &self.tags {
+            if !image_tags.contains(tag) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Image Adjustments
 // ---------------------------------------------------------------------------
 
@@ -178,6 +203,7 @@ pub struct SessionState {
     pub pending_metadata_strips: HashSet<PathBuf>,
     pub ignored_images:    HashSet<PathBuf>,
     pub rating_filter:     Option<RatingFilter>,
+    pub tag_filter:        TagFilter,
     pub sort_order:        SortOrder,
     /// Per-image adjustments (exposure, gamma, remap)
     pub adjustments:       HashMap<PathBuf, ImageAdjustments>,
@@ -213,6 +239,7 @@ impl SessionState {
         self.pending_metadata_strips.clear();
         self.ignored_images.clear();
         self.rating_filter = None;
+        self.tag_filter = TagFilter::default();
     }
 
     // ── Metadata Strip ────────────────────────────────────────────────────
@@ -415,5 +442,18 @@ mod tests {
         assert!( CropRect::new(10.0, 10.0, 100.0, 200.0).is_valid());
         assert!(!CropRect::new(10.0, 10.0,   0.0, 200.0).is_valid());
         assert!(!CropRect::new(10.0, 10.0, -10.0, 200.0).is_valid());
+    }
+
+    // ── TagFilter ────────────────────────────────────────────────────────
+
+    #[test]
+    fn tag_filter_matches() {
+        let mut f = TagFilter::default();
+        f.tags.insert("vacation".to_string());
+        f.tags.insert("2024".to_string());
+
+        assert!( f.matches(&["vacation".to_string(), "2024".to_string(), "beach".to_string()]));
+        assert!(!f.matches(&["vacation".to_string(), "beach".to_string()]));
+        assert!( TagFilter::default().matches(&["anything".to_string()]));
     }
 }

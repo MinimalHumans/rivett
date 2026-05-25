@@ -13,9 +13,19 @@ use crate::formats::SupportedFormat;
 
 #[derive(Default)]
 pub struct UtilitiesState {
-    pub purge:     Option<PurgeState>,
-    pub db_health: Option<DbHealthState>,
+    purge:             Option<PurgeState>,
+    db_health:         Option<DbHealthState>,
+    tag_editor:        Option<TagEditorState>,
 }
+
+#[derive(Default)]
+struct TagEditorState {
+    tags:              Vec<String>,
+    rename_old:        String,
+    rename_new:        String,
+    confirm_delete:    Option<String>,
+}
+
 
 impl UtilitiesState {
     pub fn open_purge(&mut self, base_path: PathBuf) {
@@ -27,12 +37,104 @@ impl UtilitiesState {
         self.db_health = Some(DbHealthState::new(total));
     }
 
+    pub fn open_tag_editor(&mut self, db: Option<&Database>) {
+        if let Some(db) = db {
+            if let Ok(tags) = db.get_all_tags() {
+                self.tag_editor = Some(TagEditorState {
+                    tags,
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
     pub fn draw(&mut self, ctx: &Context, db: Option<&Database>) {
         if let Some(ref mut state) = self.purge {
             if !state.draw(ctx, db) { self.purge = None; }
         }
         if let Some(ref mut state) = self.db_health {
             if !state.draw(ctx, db) { self.db_health = None; }
+        }
+        self.draw_tag_editor(ctx, db);
+    }
+
+    fn draw_tag_editor(&mut self, ctx: &Context, db: Option<&Database>) {
+        let Some(mut state) = self.tag_editor.take() else { return };
+        let mut open = true;
+
+        egui::Window::new("Tag Manager")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(300.0)
+            .show(ctx, |ui| {
+                if let Some(db) = db {
+                    ui.label("Manage all unique tags in the database.");
+                    ui.separator();
+
+                    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                        let mut tag_to_delete = None;
+                        for tag in &state.tags {
+                            ui.horizontal(|ui| {
+                                ui.label(tag);
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.button("Rename").clicked() {
+                                        state.rename_old = tag.clone();
+                                        state.rename_new = tag.clone();
+                                    }
+                                    if ui.button("Delete").clicked() {
+                                        tag_to_delete = Some(tag.clone());
+                                    }
+                                });
+                            });
+                        }
+
+                        if let Some(tag) = tag_to_delete {
+                            state.confirm_delete = Some(tag);
+                        }
+                    });
+
+                    if !state.rename_old.is_empty() {
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Rename '{}' to:", state.rename_old));
+                            ui.text_edit_singleline(&mut state.rename_new);
+                            if ui.button("OK").clicked() {
+                                let _ = db.rename_tag(&state.rename_old, &state.rename_new);
+                                state.rename_old.clear();
+                                if let Ok(t) = db.get_all_tags() { state.tags = t; }
+                            }
+                            if ui.button("Cancel").clicked() {
+                                state.rename_old.clear();
+                            }
+                        });
+                    }
+
+                    if let Some(tag) = state.confirm_delete.clone() {
+                        egui::Window::new("Delete Tag?")
+                            .collapsible(false)
+                            .resizable(false)
+                            .pivot(egui::Align2::CENTER_CENTER)
+                            .show(ctx, |ui| {
+                                ui.label(format!("Are you sure you want to delete the tag '{}' from ALL images?", tag));
+                                ui.horizontal(|ui| {
+                                    if ui.button("Yes, Delete").clicked() {
+                                        let _ = db.delete_tag(&tag);
+                                        state.confirm_delete = None;
+                                        if let Ok(t) = db.get_all_tags() { state.tags = t; }
+                                    }
+                                    if ui.button("Cancel").clicked() {
+                                        state.confirm_delete = None;
+                                    }
+                                });
+                            });
+                    }
+                } else {
+                    ui.label("Database not available.");
+                }
+            });
+
+        if open {
+            self.tag_editor = Some(state);
         }
     }
 }

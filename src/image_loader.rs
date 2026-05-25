@@ -24,6 +24,7 @@ pub struct DirectoryListing {
     pub current_index: usize,
     /// When set, only images matching this filter (as found in the database) are shown.
     pub rating_filter: Option<crate::session::RatingFilter>,
+    pub tag_filter:    crate::session::TagFilter,
 }
 
 impl DirectoryListing {
@@ -31,7 +32,8 @@ impl DirectoryListing {
     pub fn scan(
         dir:    &Path,
         order:  SortOrder,
-        filter: Option<crate::session::RatingFilter>,
+        rating_filter: Option<crate::session::RatingFilter>,
+        tag_filter:    crate::session::TagFilter,
         db:     Option<&crate::db::Database>,
     ) -> std::io::Result<Self> {
         let mut files: Vec<PathBuf> = std::fs::read_dir(dir)?
@@ -46,17 +48,26 @@ impl DirectoryListing {
                 // Prune records for files that no longer exist
                 let _ = Self::prune_missing_images(db, d_rec.id, &files);
 
-                if let Some(ref f) = filter {
+                if rating_filter.is_some() || !tag_filter.is_empty() {
                     files.retain(|p| {
                         let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                        if let Ok(Some(img_rec)) = db.get_image(d_rec.id, fname) {
-                            f.matches(p, img_rec.rating)
-                        } else {
-                            false
+                        let Ok(Some(img_rec)) = db.get_image(d_rec.id, fname) else {
+                            return rating_filter.is_none() && tag_filter.is_empty();
+                        };
+
+                        if let Some(ref rf) = rating_filter {
+                            if !rf.matches(p, img_rec.rating) { return false; }
                         }
+
+                        if !tag_filter.is_empty() {
+                            let Ok(tags) = db.get_image_tags(d_rec.id, fname) else { return false; };
+                            if !tag_filter.matches(&tags) { return false; }
+                        }
+
+                        true
                     });
                 }
-            } else if filter.is_some() {
+            } else if rating_filter.is_some() || !tag_filter.is_empty() {
                 files.clear();
             }
         }
@@ -67,7 +78,8 @@ impl DirectoryListing {
             dir_path: dir.to_path_buf(),
             files,
             current_index: 0,
-            rating_filter: filter,
+            rating_filter,
+            tag_filter,
         })
     }
 
@@ -81,13 +93,17 @@ impl DirectoryListing {
 
         let fresh = if self.dir_path.as_os_str().is_empty() {
             // Global/Recursive view
-            if let (Some(db), Some(filter)) = (db, &self.rating_filter) {
-                Self::scan_global(db, filter)?
+            if let Some(db) = db {
+                if self.rating_filter.is_some() || !self.tag_filter.is_empty() {
+                    Self::scan_global(db, self.rating_filter.as_ref(), &self.tag_filter)?
+                } else {
+                    return Err(std::io::Error::new(std::io::ErrorKind::Other, "Cannot refresh global view without filter"));
+                }
             } else {
-                return Err(std::io::Error::new(std::io::ErrorKind::Other, "Cannot refresh global view without DB or filter"));
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, "Cannot refresh global view without DB"));
             }
         } else {
-            Self::scan(&self.dir_path, order, self.rating_filter.clone(), db)?
+            Self::scan(&self.dir_path, order, self.rating_filter.clone(), self.tag_filter.clone(), db)?
         };
 
         *self = fresh;
@@ -112,12 +128,13 @@ impl DirectoryListing {
     }
 
 
-    /// Create a listing of all rated images across the library that match `filter`.
+    /// Create a listing of all images across the library that match filters.
     pub fn scan_global(
-        db:     &crate::db::Database,
-        filter: &crate::session::RatingFilter,
+        db:            &crate::db::Database,
+        rating_filter: Option<&crate::session::RatingFilter>,
+        tag_filter:    &crate::session::TagFilter,
     ) -> std::io::Result<Self> {
-        let records = db.get_rated_filtered(filter)
+        let records = db.get_images_filtered(rating_filter, tag_filter)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
         
         let mut files = Vec::new();
@@ -135,7 +152,8 @@ impl DirectoryListing {
             dir_path: PathBuf::new(), // Special empty path for global view
             files,
             current_index: 0,
-            rating_filter: Some(filter.clone()),
+            rating_filter: rating_filter.cloned(),
+            tag_filter:    tag_filter.clone(),
         })
     }
 
@@ -872,14 +890,14 @@ mod tests {
     #[test]
     fn scan_finds_supported_extensions() {
         let dir     = make_dir(&["b.png", "a.jpg", "c.bmp", "skip.txt"]);
-        let listing = DirectoryListing::scan(dir.path(), SortOrder::Name, None, None).unwrap();
+        let listing = DirectoryListing::scan(dir.path(), SortOrder::Name, None, crate::session::TagFilter::default(), None).unwrap();
         assert_eq!(listing.len(), 3, "txt should be excluded");
     }
 
     #[test]
     fn scan_sorts_by_name_ascending() {
         let dir     = make_dir(&["c.gif", "a.png", "b.jpg"]);
-        let listing = DirectoryListing::scan(dir.path(), SortOrder::Name, None, None).unwrap();
+        let listing = DirectoryListing::scan(dir.path(), SortOrder::Name, None, crate::session::TagFilter::default(), None).unwrap();
         let names: Vec<_> = listing.files.iter()
             .map(|p| p.file_name().unwrap().to_str().unwrap())
             .collect();
@@ -889,7 +907,7 @@ mod tests {
     #[test]
     fn navigation_does_not_wrap_at_end() {
         let dir     = make_dir(&["a.png", "b.png", "c.png"]);
-        let mut l   = DirectoryListing::scan(dir.path(), SortOrder::Name, None, None).unwrap();
+        let mut l   = DirectoryListing::scan(dir.path(), SortOrder::Name, None, crate::session::TagFilter::default(), None).unwrap();
         while l.go_next() {}
         assert!(!l.can_go_next());
         assert!(l.can_go_prev());
@@ -899,7 +917,7 @@ mod tests {
     #[test]
     fn navigation_does_not_wrap_at_start() {
         let dir   = make_dir(&["a.png", "b.png"]);
-        let mut l = DirectoryListing::scan(dir.path(), SortOrder::Name, None, None).unwrap();
+        let mut l = DirectoryListing::scan(dir.path(), SortOrder::Name, None, crate::session::TagFilter::default(), None).unwrap();
         assert!(!l.can_go_prev());
         assert!(!l.go_prev(), "go_prev at start must return false");
         assert_eq!(l.current_index, 0);
@@ -908,7 +926,7 @@ mod tests {
     #[test]
     fn seek_to_positions_cursor_correctly() {
         let dir     = make_dir(&["a.png", "b.png", "c.png"]);
-        let mut l   = DirectoryListing::scan(dir.path(), SortOrder::Name, None, None).unwrap();
+        let mut l   = DirectoryListing::scan(dir.path(), SortOrder::Name, None, crate::session::TagFilter::default(), None).unwrap();
         let target  = dir.path().join("b.png");
         assert!(l.seek_to(&target));
         assert_eq!(l.current_index, 1);
@@ -917,7 +935,7 @@ mod tests {
     #[test]
     fn seek_to_unknown_returns_false() {
         let dir   = make_dir(&["a.png"]);
-        let mut l = DirectoryListing::scan(dir.path(), SortOrder::Name, None, None).unwrap();
+        let mut l = DirectoryListing::scan(dir.path(), SortOrder::Name, None, crate::session::TagFilter::default(), None).unwrap();
         assert!(!l.seek_to(&dir.path().join("nonexistent.png")));
         assert_eq!(l.current_index, 0, "cursor should be unchanged");
     }
@@ -925,7 +943,7 @@ mod tests {
     #[test]
     fn empty_directory_listing() {
         let dir   = make_dir(&["readme.txt"]);
-        let l     = DirectoryListing::scan(dir.path(), SortOrder::Name, None, None).unwrap();
+        let l     = DirectoryListing::scan(dir.path(), SortOrder::Name, None, crate::session::TagFilter::default(), None).unwrap();
         assert!(l.is_empty());
         assert!(l.current().is_none());
         assert!(!l.can_go_next());
@@ -935,7 +953,7 @@ mod tests {
     #[test]
     fn position_label_is_1_based() {
         let dir   = make_dir(&["a.png", "b.png", "c.png"]);
-        let mut l = DirectoryListing::scan(dir.path(), SortOrder::Name, None, None).unwrap();
+        let mut l = DirectoryListing::scan(dir.path(), SortOrder::Name, None, crate::session::TagFilter::default(), None).unwrap();
         assert_eq!(l.position_label(), "1 / 3");
         l.go_next();
         assert_eq!(l.position_label(), "2 / 3");
@@ -944,7 +962,7 @@ mod tests {
     #[test]
     fn refresh_restores_cursor_to_same_file() {
         let dir    = make_dir(&["a.png", "b.png", "c.png"]);
-        let mut l  = DirectoryListing::scan(dir.path(), SortOrder::Name, None, None).unwrap();
+        let mut l  = DirectoryListing::scan(dir.path(), SortOrder::Name, None, crate::session::TagFilter::default(), None).unwrap();
         l.seek_to(&dir.path().join("b.png"));
         l.refresh(SortOrder::Name, None).unwrap();
         assert_eq!(

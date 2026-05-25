@@ -38,6 +38,17 @@ CREATE TABLE IF NOT EXISTS images (
     UNIQUE(directory_id, filename)
 );
 
+CREATE TABLE IF NOT EXISTS tags (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    name    TEXT    NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS image_tags (
+    image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+    tag_id      INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    PRIMARY KEY (image_id, tag_id)
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key     TEXT PRIMARY KEY,
     value   TEXT NOT NULL
@@ -46,6 +57,8 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE INDEX IF NOT EXISTS idx_images_dir      ON images(directory_id);
 CREATE INDEX IF NOT EXISTS idx_dirs_uuid       ON directories(uuid);
 CREATE INDEX IF NOT EXISTS idx_dirs_path       ON directories(path);
+CREATE INDEX IF NOT EXISTS idx_tags_name       ON tags(name);
+CREATE INDEX IF NOT EXISTS idx_image_tags_tag  ON image_tags(tag_id);
 ";
 
 // ---------------------------------------------------------------------------
@@ -252,6 +265,76 @@ impl Database {
         self.gc_empty_record(directory_id, filename)
     }
 
+    // ── Tags ─────────────────────────────────────────────────────────────
+
+    pub fn get_all_tags(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT name FROM tags ORDER BY name")?;
+        let tags: Result<Vec<String>> = stmt.query_map([], |row| row.get(0))?.collect();
+        tags
+    }
+
+    pub fn get_image_tags(&self, directory_id: i64, filename: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.name FROM tags t
+             JOIN image_tags it ON t.id = it.tag_id
+             JOIN images i ON it.image_id = i.id
+             WHERE i.directory_id = ?1 AND i.filename = ?2
+             ORDER BY t.name",
+        )?;
+        let tags: Result<Vec<String>> = stmt.query_map(params![directory_id, filename], |row| row.get(0))?.collect();
+        tags
+    }
+
+    pub fn set_image_tags(&self, directory_id: i64, filename: &str, tags: &[String]) -> Result<()> {
+        self.ensure_image_exists(directory_id, filename)?;
+        let image_id: i64 = self.conn.query_row(
+            "SELECT id FROM images WHERE directory_id = ?1 AND filename = ?2",
+            params![directory_id, filename],
+            |row| row.get(0),
+        )?;
+
+        self.conn.execute("DELETE FROM image_tags WHERE image_id = ?1", params![image_id])?;
+
+        for tag_name in tags {
+            let tag_name = tag_name.trim();
+            if tag_name.is_empty() { continue; }
+
+            self.conn.execute(
+                "INSERT OR IGNORE INTO tags (name) VALUES (?1)",
+                params![tag_name],
+            )?;
+            let tag_id: i64 = self.conn.query_row(
+                "SELECT id FROM tags WHERE name = ?1",
+                params![tag_name],
+                |row| row.get(0),
+            )?;
+            self.conn.execute(
+                "INSERT OR IGNORE INTO image_tags (image_id, tag_id) VALUES (?1, ?2)",
+                params![image_id, tag_id],
+            )?;
+        }
+
+        self.conn.execute(
+            "UPDATE images SET updated_at = ?1 WHERE id = ?2",
+            params![Self::now(), image_id],
+        )?;
+
+        self.gc_empty_record(directory_id, filename)
+    }
+
+    pub fn delete_tag(&self, name: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM tags WHERE name = ?1", params![name])?;
+        Ok(())
+    }
+
+    pub fn rename_tag(&self, old_name: &str, new_name: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tags SET name = ?1 WHERE name = ?2",
+            params![new_name, old_name],
+        )?;
+        Ok(())
+    }
+
     /// Insert a placeholder record if one doesn't already exist.
     fn ensure_image_exists(&self, directory_id: i64, filename: &str) -> Result<()> {
         let now = Self::now();
@@ -271,7 +354,8 @@ impl Database {
             "DELETE FROM images
              WHERE directory_id = ?1 AND filename = ?2
                AND rating IS NULL AND bookmarked = 0 AND rotation = 0
-               AND (note IS NULL OR note = '')",
+               AND (note IS NULL OR note = '')
+               AND NOT EXISTS (SELECT 1 FROM image_tags WHERE image_id = images.id)",
             params![directory_id, filename],
         )?;
         Ok(())
@@ -324,45 +408,65 @@ impl Database {
         result
     }
 
-    /// All rated images matching a specific filter.
-    pub fn get_rated_filtered(&self, filter: &crate::session::RatingFilter) -> Result<Vec<(std::path::PathBuf, ImageRecord)>> {
-        let op_sql = match filter.op {
-            crate::session::RatingFilterOp::AtLeast => ">=",
-            crate::session::RatingFilterOp::AtMost  => "<=",
-            crate::session::RatingFilterOp::Exactly => "=",
-        };
-
-        let mut query = format!(
+    /// All images matching specific rating and/or tag filters.
+    pub fn get_images_filtered(
+        &self, 
+        rating_filter: Option<&crate::session::RatingFilter>,
+        tag_filter:    &crate::session::TagFilter,
+    ) -> Result<Vec<(std::path::PathBuf, ImageRecord)>> {
+        let mut query = String::from(
             "SELECT d.path,
                     i.id, i.directory_id, i.filename, i.file_size,
                     i.file_modified_at, i.rating, i.bookmarked, i.rotation, i.note,
                     i.created_at, i.updated_at
-             FROM images i JOIN directories d ON i.directory_id = d.id
-             WHERE i.rating {} ?1",
-            op_sql
+             FROM images i JOIN directories d ON i.directory_id = d.id"
         );
 
-        if filter.path_prefix.is_some() {
-            query.push_str(" AND d.path LIKE ?2");
+        let mut where_clauses = Vec::new();
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        if let Some(rf) = rating_filter {
+            let op_sql = match rf.op {
+                crate::session::RatingFilterOp::AtLeast => ">=",
+                crate::session::RatingFilterOp::AtMost  => "<=",
+                crate::session::RatingFilterOp::Exactly => "=",
+            };
+            where_clauses.push(format!("i.rating {} ?{}", op_sql, params.len() + 1));
+            params.push(Box::new(rf.value as i64));
+
+            if let Some(prefix) = &rf.path_prefix {
+                where_clauses.push(format!("d.path LIKE ?{}", params.len() + 1));
+                params.push(Box::new(format!("{}%", prefix.to_string_lossy())));
+            }
         }
 
-        query.push_str(" ORDER BY i.rating DESC, i.updated_at DESC");
+        if !tag_filter.is_empty() {
+            for (idx, tag) in tag_filter.tags.iter().enumerate() {
+                let it_alias = format!("it{}", idx);
+                let t_alias = format!("t{}", idx);
+                query.push_str(&format!(
+                    " JOIN image_tags {} ON i.id = {}.image_id
+                      JOIN tags {} ON {}.tag_id = {}.id AND {}.name = ?{}",
+                    it_alias, it_alias, t_alias, it_alias, t_alias, t_alias, params.len() + 1
+                ));
+                params.push(Box::new(tag.clone()));
+            }
+        }
+
+        if !where_clauses.is_empty() {
+            query.push_str(" WHERE ");
+            query.push_str(&where_clauses.join(" AND "));
+        }
+
+        query.push_str(" ORDER BY i.updated_at DESC");
 
         let mut stmt = self.conn.prepare(&query)?;
         
-        let result: Result<Vec<_>> = if let Some(prefix) = &filter.path_prefix {
-            let prefix_str = prefix.to_string_lossy().to_string();
-            let like_pattern = format!("{}%", prefix_str);
-            stmt.query_map(rusqlite::params![filter.value, like_pattern], |row| {
-                let dir: String = row.get(0)?;
-                Ok((std::path::PathBuf::from(dir), map_image_row(row, 1)?))
-            })?.collect()
-        } else {
-            stmt.query_map(rusqlite::params![filter.value], |row| {
-                let dir: String = row.get(0)?;
-                Ok((std::path::PathBuf::from(dir), map_image_row(row, 1)?))
-            })?.collect()
-        };
+        let p_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let result: Result<Vec<_>> = stmt.query_map(p_refs.as_slice(), |row| {
+            let dir: String = row.get(0)?;
+            Ok((std::path::PathBuf::from(dir), map_image_row(row, 1)?))
+        })?.collect();
 
         result
     }
