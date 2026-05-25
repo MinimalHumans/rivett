@@ -8,3 +8,4 @@ pub mod viewer;
 pub mod renderer;
 pub mod app;
 pub mod utilities;
+mod db_test_local;

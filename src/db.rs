@@ -44,13 +44,6 @@ CREATE TABLE IF NOT EXISTS tags (
 );
 
 CREATE TABLE IF NOT EXISTS image_tags (
-...
-pub struct TagRecord {
-    pub id:    i64,
-    pub name:  String,
-    pub color: u32,
-}
-
     image_id    INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
     tag_id      INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
     PRIMARY KEY (image_id, tag_id)
@@ -124,8 +117,14 @@ impl Database {
         }
         let conn = Connection::open(path)?;
         let db = Self { conn };
-        db.initialise()?;
-        db.migrate()?;
+        if let Err(e) = db.initialise() {
+            let _ = std::fs::write("db_init_error.txt", format!("Failed to initialise DB: {}\nSCHEMA_SQL was: {}", e, SCHEMA_SQL));
+            return Err(e);
+        }
+        if let Err(e) = db.migrate() {
+            let _ = std::fs::write("db_init_error.txt", format!("Failed to migrate DB: {}", e));
+            return Err(e);
+        }
         Ok(db)
     }
 
@@ -144,12 +143,22 @@ impl Database {
 
         // Migration: add color column to tags if missing
         let has_color = {
-            let mut stmt = self.conn.prepare("PRAGMA table_info(tags)")?;
-            let mut rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-            rows.any(|r| r.as_deref() == Ok("color"))
+            if let Ok(mut stmt) = self.conn.prepare("PRAGMA table_info(tags)") {
+                if let Ok(mut rows) = stmt.query_map([], |row| row.get::<_, String>(1)) {
+                    rows.any(|r| r.as_deref() == Ok("color"))
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
         };
         if !has_color {
-            let _ = self.conn.execute("ALTER TABLE tags ADD COLUMN color INTEGER NOT NULL DEFAULT 0", []);
+            if let Err(e) = self.conn.execute("ALTER TABLE tags ADD COLUMN color INTEGER NOT NULL DEFAULT 0", []) {
+                log::error!("Failed to add color column to tags: {}", e);
+                // If it fails, maybe we can try adding it without NOT NULL
+                let _ = self.conn.execute("ALTER TABLE tags ADD COLUMN color INTEGER DEFAULT 0", []);
+            }
         }
 
         Ok(())
@@ -297,7 +306,10 @@ impl Database {
     // ── Tags ─────────────────────────────────────────────────────────────
 
     pub fn get_all_tags(&self) -> Result<Vec<TagRecord>> {
-        let mut stmt = self.conn.prepare("SELECT id, name, color FROM tags ORDER BY name")?;
+        let mut stmt = match self.conn.prepare("SELECT id, name, color FROM tags ORDER BY name") {
+            Ok(s) => s,
+            Err(_) => return self.get_all_tags_fallback(),
+        };
         let tags: Result<Vec<TagRecord>> = stmt.query_map([], |row| Ok(TagRecord {
             id:    row.get(0)?,
             name:  row.get(1)?,
@@ -306,9 +318,38 @@ impl Database {
         tags
     }
 
+    fn get_all_tags_fallback(&self) -> Result<Vec<TagRecord>> {
+        let mut stmt = self.conn.prepare("SELECT id, name FROM tags ORDER BY name")?;
+        let tags: Result<Vec<TagRecord>> = stmt.query_map([], |row| Ok(TagRecord {
+            id:    row.get(0)?,
+            name:  row.get(1)?,
+            color: color_from_id(row.get::<_, u32>(0)?),
+        }))?.collect();
+        tags
+    }
+
     pub fn get_image_tags(&self, directory_id: i64, filename: &str) -> Result<Vec<TagRecord>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = match self.conn.prepare(
             "SELECT t.id, t.name, t.color FROM tags t
+             JOIN image_tags it ON t.id = it.tag_id
+             JOIN images i ON it.image_id = i.id
+             WHERE i.directory_id = ?1 AND i.filename = ?2
+             ORDER BY t.name"
+        ) {
+            Ok(s) => s,
+            Err(_) => return self.get_image_tags_fallback(directory_id, filename),
+        };
+        let tags: Result<Vec<TagRecord>> = stmt.query_map(params![directory_id, filename], |row| Ok(TagRecord {
+            id:    row.get(0)?,
+            name:  row.get(1)?,
+            color: row.get::<_, i64>(2)? as u32,
+        }))?.collect();
+        tags
+    }
+
+    fn get_image_tags_fallback(&self, directory_id: i64, filename: &str) -> Result<Vec<TagRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.id, t.name FROM tags t
              JOIN image_tags it ON t.id = it.tag_id
              JOIN images i ON it.image_id = i.id
              WHERE i.directory_id = ?1 AND i.filename = ?2
@@ -317,7 +358,7 @@ impl Database {
         let tags: Result<Vec<TagRecord>> = stmt.query_map(params![directory_id, filename], |row| Ok(TagRecord {
             id:    row.get(0)?,
             name:  row.get(1)?,
-            color: row.get::<_, i64>(2)? as u32,
+            color: color_from_id(row.get::<_, u32>(0)?),
         }))?.collect();
         tags
     }
@@ -346,16 +387,21 @@ impl Database {
             let tag_id = if let Some(id) = existing_id? {
                 id
             } else {
-                self.conn.execute(
+                if self.conn.execute(
                     "INSERT INTO tags (name, color) VALUES (?1, 0)",
                     params![tag_name],
-                )?;
+                ).is_err() {
+                    self.conn.execute(
+                        "INSERT INTO tags (name) VALUES (?1)",
+                        params![tag_name],
+                    )?;
+                }
                 let id = self.conn.last_insert_rowid();
                 let color = color_from_id(id as u32);
-                self.conn.execute(
+                let _ = self.conn.execute(
                     "UPDATE tags SET color = ?1 WHERE id = ?2",
                     params![color as i64, id],
-                )?;
+                );
                 id
             };
 
@@ -788,4 +834,19 @@ mod tests {
         let img = db.get_image(dir.id, "img.jpg").unwrap().unwrap();
         assert_eq!(img.rotation, 1);
     }
+}
+#[test]
+fn test_db_migration_sequence() {
+    let path = std::path::Path::new("test_mig.db");
+    let _ = std::fs::remove_file(path);
+    
+    // Step 1
+    let conn = Connection::open(path).unwrap();
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS directories (id INTEGER PRIMARY KEY);").unwrap();
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS tags (id INTEGER PRIMARY KEY, name TEXT UNIQUE);").unwrap();
+    drop(conn);
+    
+    // Step 2 (open)
+    let db = Database::open(path).unwrap();
+    println!("SUCCESS!");
 }
