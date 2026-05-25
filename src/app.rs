@@ -1041,43 +1041,42 @@ impl RivettApp {
 
                             if res.has_focus() {
                                 // 1. Handle keyboard events for autocomplete navigation
-                                let (suggestions_changed, suggestions_cleared) = ui.input(|i| {
-                                    let mut changed = false;
-                                    let mut cleared = false;
-
+                                ui.input_mut(|i| {
                                     if !self.tag_suggestions.is_empty() {
                                         if i.key_pressed(egui::Key::ArrowDown) {
                                             self.tag_suggestion_idx = (self.tag_suggestion_idx + 1).min(self.tag_suggestions.len().saturating_sub(1));
-                                            changed = true;
+                                            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
                                         }
                                         if i.key_pressed(egui::Key::ArrowUp) {
                                             self.tag_suggestion_idx = self.tag_suggestion_idx.saturating_sub(1);
-                                            changed = true;
+                                            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
                                         }
                                         if i.key_pressed(egui::Key::Escape) {
                                             self.tag_suggestions.clear();
-                                            cleared = true;
+                                            i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
                                         }
                                         if i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Tab) {
                                             if let Some(s) = self.tag_suggestions.get(self.tag_suggestion_idx) {
                                                 tag_to_commit = Some(s.clone());
                                                 self.tag_suggestions.clear();
-                                                cleared = true;
+                                                i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                                                i.consume_key(egui::Modifiers::NONE, egui::Key::Tab);
                                             }
                                         }
                                     } else {
                                         if i.key_pressed(egui::Key::Enter) && !self.tag_input.trim().is_empty() {
                                             tag_to_commit = Some(self.tag_input.clone());
+                                            i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
                                         }
                                         if i.key_pressed(egui::Key::Escape) {
                                             res.surrender_focus();
+                                            i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
                                         }
                                     }
-                                    (changed, cleared)
                                 });
 
                                 // 2. Update suggestions based on input (threshold: 2 chars)
-                                if !suggestions_changed && !suggestions_cleared {
+                                if tag_to_commit.is_none() {
                                     if self.tag_input.len() >= 2 {
                                         let prev_suggestions = self.tag_suggestions.clone();
                                         self.tag_suggestions = self.all_tags.iter()
@@ -1097,24 +1096,24 @@ impl RivettApp {
 
                                 // 3. Render anchored dropdown
                                 if !self.tag_suggestions.is_empty() {
-                                    let mut selected_suggestion = None;
-
+                                    let mut clicked_suggestion = None;
                                     egui::Area::new(egui::Id::new("tag_autocomplete"))
                                         .fixed_pos(popup_pos)
                                         .order(egui::Order::Foreground)
+                                        .interactable(true)
                                         .show(ui.ctx(), |ui| {
                                             egui::Frame::popup(ui.style()).show(ui, |ui| {
                                                 ui.set_min_width(res.rect.width());
                                                 for (i, suggestion) in self.tag_suggestions.iter().enumerate() {
                                                     let is_selected = i == self.tag_suggestion_idx;
                                                     if ui.selectable_label(is_selected, suggestion).clicked() {
-                                                        selected_suggestion = Some(suggestion.clone());
+                                                        clicked_suggestion = Some(suggestion.clone());
                                                     }
                                                 }
                                             });
                                         });
                                     
-                                    if let Some(suggestion) = selected_suggestion {
+                                    if let Some(suggestion) = clicked_suggestion {
                                         tag_to_commit = Some(suggestion);
                                         self.tag_suggestions.clear();
                                     }

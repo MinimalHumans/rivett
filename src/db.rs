@@ -440,6 +440,17 @@ impl Database {
         Ok(())
     }
 
+    pub fn count_images_with_tag(&self, name: &str) -> Result<usize> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM image_tags it
+             JOIN tags t ON it.tag_id = t.id
+             WHERE t.name = ?1",
+            params![name],
+            |row| row.get(0),
+        )?;
+        Ok(n as usize)
+    }
+
     /// Insert a placeholder record if one doesn't already exist.
     fn ensure_image_exists(&self, directory_id: i64, filename: &str) -> Result<()> {
         let now = Self::now();

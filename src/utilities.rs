@@ -21,9 +21,14 @@ pub struct UtilitiesState {
 #[derive(Default)]
 struct TagEditorState {
     tags:              Vec<crate::db::TagRecord>,
-    rename_old:        String,
-    rename_new:        String,
+    /// The ID of the tag currently being renamed.
+    editing_tag_id:    Option<i64>,
+    /// The current text in the rename field.
+    rename_buffer:     String,
+    /// The tag name being considered for deletion.
     confirm_delete:    Option<String>,
+    /// Number of images affected by the pending deletion.
+    affected_count:    usize,
 }
 
 
@@ -65,65 +70,111 @@ impl UtilitiesState {
         egui::Window::new("Tag Manager")
             .open(&mut open)
             .resizable(true)
-            .default_width(300.0)
+            .default_width(350.0)
             .show(ctx, |ui| {
                 if let Some(db) = db {
-                    ui.label("Manage all unique tags in the database.");
+                    ui.label("Double-click tag name to rename. Click swatch for color.");
                     ui.separator();
 
-                    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                    egui::ScrollArea::vertical().max_height(350.0).show(ui, |ui| {
                         let mut tag_to_delete = None;
-                        for tag in &state.tags {
-                            ui.horizontal(|ui| {
-                                ui.label(&tag.name);
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.button("Rename").clicked() {
-                                        state.rename_old = tag.name.clone();
-                                        state.rename_new = tag.name.clone();
+                        let mut refresh_needed = false;
+
+                        egui::Grid::new("tag_manager_grid")
+                            .num_columns(3)
+                            .spacing([8.0, 4.0])
+                            .show(ui, |ui| {
+                                for tag in &state.tags {
+                                    // 1. Color Swatch
+                                    let mut color = egui::Color32::from_rgb(
+                                        ((tag.color >> 16) & 0xFF) as u8,
+                                        ((tag.color >> 8) & 0xFF) as u8,
+                                        (tag.color & 0xFF) as u8,
+                                    );
+                                    if egui::color_picker::color_edit_button_srgba(ui, &mut color, egui::color_picker::Alpha::Opaque).changed() {
+                                        let new_color = ((color.r() as u32) << 16) | ((color.g() as u32) << 8) | (color.b() as u32);
+                                        let _ = db.update_tag_color(tag.id, new_color);
+                                        refresh_needed = true;
                                     }
-                                    if ui.button("Delete").clicked() {
+
+                                    // 2. Name / Edit field
+                                    if state.editing_tag_id == Some(tag.id) {
+                                        let res = ui.text_edit_singleline(&mut state.rename_buffer);
+                                        if res.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                            if !state.rename_buffer.trim().is_empty() && state.rename_buffer != tag.name {
+                                                let _ = db.rename_tag(&tag.name, &state.rename_buffer);
+                                                refresh_needed = true;
+                                            }
+                                            state.editing_tag_id = None;
+                                        } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                            state.editing_tag_id = None;
+                                        }
+                                        res.request_focus();
+                                    } else {
+                                        let label = ui.selectable_label(false, &tag.name);
+                                        if label.double_clicked() {
+                                            state.editing_tag_id = Some(tag.id);
+                                            state.rename_buffer = tag.name.clone();
+                                        }
+                                    }
+
+                                    // 3. Delete button
+                                    if ui.button(" ✖ ").on_hover_text("Delete tag").clicked() {
                                         tag_to_delete = Some(tag.name.clone());
                                     }
-                                });
+                                    ui.end_row();
+                                }
                             });
-                        }
 
                         if let Some(tag_name) = tag_to_delete {
-                            state.confirm_delete = Some(tag_name);
+                            state.confirm_delete = Some(tag_name.clone());
+                            state.affected_count = db.count_images_with_tag(&tag_name).unwrap_or(0);
+                        }
+                        if refresh_needed {
+                            if let Ok(t) = db.get_all_tags() { state.tags = t; }
                         }
                     });
 
-                    if !state.rename_old.is_empty() {
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            ui.label(format!("Rename '{}' to:", state.rename_old));
-                            ui.text_edit_singleline(&mut state.rename_new);
-                            if ui.button("OK").clicked() {
-                                let _ = db.rename_tag(&state.rename_old, &state.rename_new);
-                                state.rename_old.clear();
-                                if let Ok(t) = db.get_all_tags() { state.tags = t; }
-                            }
-                            if ui.button("Cancel").clicked() {
-                                state.rename_old.clear();
-                            }
-                        });
-                    }
-
                     if let Some(tag) = state.confirm_delete.clone() {
-                        egui::Window::new("Delete Tag?")
+                        egui::Window::new("Confirm Tag Deletion")
                             .collapsible(false)
                             .resizable(false)
                             .pivot(egui::Align2::CENTER_CENTER)
                             .show(ctx, |ui| {
-                                ui.label(format!("Are you sure you want to delete the tag '{}' from ALL images?", tag));
+                                ui.label(egui::RichText::new(format!(
+                                    "Delete tag '{}'?", tag
+                                )).strong());
+                                
+                                ui.add_space(4.0);
+                                ui.label(format!(
+                                    "This will remove the tag from {} image{}.",
+                                    state.affected_count,
+                                    if state.affected_count == 1 { "" } else { "s" }
+                                ));
+                                
+                                ui.add_space(10.0);
                                 ui.horizontal(|ui| {
-                                    if ui.button("Yes, Delete").clicked() {
+                                    let abort_btn = ui.button("Abort");
+                                    let delete_btn = ui.button(egui::RichText::new("Delete").color(egui::Color32::from_rgb(220, 80, 80)));
+                                    
+                                    let mut should_abort = abort_btn.clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape));
+                                    let mut should_delete = delete_btn.clicked();
+
+                                    // Enter handling:
+                                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                        if delete_btn.has_focus() {
+                                            should_delete = true;
+                                        } else {
+                                            should_abort = true;
+                                        }
+                                    }
+
+                                    if should_abort {
+                                        state.confirm_delete = None;
+                                    } else if should_delete {
                                         let _ = db.delete_tag(&tag);
                                         state.confirm_delete = None;
                                         if let Ok(t) = db.get_all_tags() { state.tags = t; }
-                                    }
-                                    if ui.button("Cancel").clicked() {
-                                        state.confirm_delete = None;
                                     }
                                 });
                             });
