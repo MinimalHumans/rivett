@@ -1,6 +1,6 @@
 [package]
 name        = "rivett"
-version = "0.4.1"
+version = "0.4.2"
 authors     = ["Jesse Kretschmer"]
 edition     = "2021"
 description = "Rust Image Vetting Tool — fast, keyboard-driven image viewer"
@@ -26,6 +26,22 @@ Rivett is a high-performance image vetting tool designed for photographers and c
 maintainer = "Jesse Kretschmer <jesse@krets.com>"
 section = "graphics"
 priority = "optional"
+
+# cargo-deb configuration — used instead of cargo-bundle for .deb packaging so
+# that the AppStream metainfo file lands at /usr/share/metainfo/ (where KDE
+# Discover and other AppStream consumers expect it). cargo-bundle puts resources
+# under /usr/share/rivett/ which Discover never checks.
+[package.metadata.deb]
+maintainer = "Jesse Kretschmer <jesse@krets.com>"
+copyright = "Copyright © 2026 Jesse Kretschmer (Minimal Humans)"
+section = "graphics"
+priority = "optional"
+assets = [
+  ["target/release/rivett", "usr/bin/rivett", "755"],
+  ["resources/rivett.desktop", "usr/share/applications/rivett.desktop", "644"],
+  ["resources/com.rivett.rivett.metainfo.xml", "usr/share/metainfo/com.rivett.rivett.metainfo.xml", "644"],
+  ["resources/icon.png", "usr/share/icons/hicolor/512x512/apps/rivett.png", "644"],
+]
 
 [[bin]]
 name = "rivett"
