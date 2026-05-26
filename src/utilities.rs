@@ -16,6 +16,7 @@ pub struct UtilitiesState {
     purge:             Option<PurgeState>,
     db_health:         Option<DbHealthState>,
     tag_editor:        Option<TagEditorState>,
+    consolidate:       Option<ConsolidateState>,
 }
 
 #[derive(Default)]
@@ -53,6 +54,10 @@ impl UtilitiesState {
         }
     }
 
+    pub fn open_consolidate(&mut self, files: Vec<PathBuf>) {
+        self.consolidate = Some(ConsolidateState::new(files));
+    }
+
     pub fn draw(&mut self, ctx: &Context, db: Option<&Database>) {
         if let Some(ref mut state) = self.purge {
             if !state.draw(ctx, db) { self.purge = None; }
@@ -61,6 +66,9 @@ impl UtilitiesState {
             if !state.draw(ctx, db) { self.db_health = None; }
         }
         self.draw_tag_editor(ctx, db);
+        if let Some(ref mut state) = self.consolidate {
+            if !state.draw(ctx, db) { self.consolidate = None; }
+        }
     }
 
     fn draw_tag_editor(&mut self, ctx: &Context, db: Option<&Database>) {
@@ -802,6 +810,284 @@ impl DbHealthState {
 
         open
     }
+}
+
+// ---------------------------------------------------------------------------
+// Utility 4 — Consolidate Filtered Images
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConsolidateOp { Copy, Move }
+
+struct ConsolidateResults {
+    succeeded: usize,
+    skipped:   Vec<String>,
+    failed:    Vec<String>,
+}
+
+struct ConsolidateState {
+    files:         Vec<PathBuf>,
+    destination:   String,
+    operation:     ConsolidateOp,
+    copy_rating:     bool,
+    copy_tags:       bool,
+    copy_notes:      bool,
+    preserve_exif:   bool,
+    move_update_db:  bool,
+    confirmed:     bool,
+    results:       Option<ConsolidateResults>,
+}
+
+impl ConsolidateState {
+    fn new(files: Vec<PathBuf>) -> Self {
+        Self {
+            files,
+            destination:   String::new(),
+            operation:     ConsolidateOp::Copy,
+            copy_rating:    true,
+            copy_tags:      true,
+            copy_notes:     true,
+            preserve_exif:  true,
+            move_update_db: true,
+            confirmed:     false,
+            results:       None,
+        }
+    }
+
+    fn execute(&mut self, db: Option<&Database>) {
+        let dest = PathBuf::from(&self.destination);
+        let mut succeeded = 0usize;
+        let mut skipped   = Vec::new();
+        let mut failed    = Vec::new();
+
+        let dest_str    = dest.to_string_lossy().to_string();
+        let dest_dir_id = db.and_then(|d| d.upsert_directory_by_path(&dest_str).ok().map(|r| r.id));
+
+        for path in &self.files {
+            let fname = match path.file_name() {
+                Some(n) => n.to_string_lossy().to_string(),
+                None    => { failed.push(path.to_string_lossy().to_string()); continue; }
+            };
+            let dest_path = dest.join(&fname);
+
+            if dest_path.exists() {
+                skipped.push(fname);
+                continue;
+            }
+
+            let file_ok: std::io::Result<()> = match self.operation {
+                ConsolidateOp::Move => match std::fs::rename(path, &dest_path) {
+                    Ok(()) => Ok(()),
+                    Err(_) => std::fs::copy(path, &dest_path)
+                        .map(|_| ())
+                        .and_then(|()| std::fs::remove_file(path)),
+                },
+                ConsolidateOp::Copy => std::fs::copy(path, &dest_path).map(|_| ()),
+            };
+
+            if let Err(e) = file_ok {
+                log::error!("consolidate: {} → {}: {}", fname, dest_path.display(), e);
+                failed.push(fname);
+                continue;
+            }
+
+            if !self.preserve_exif {
+                if let Err(e) = strip_jpeg_exif(&dest_path) {
+                    log::warn!("consolidate: strip_exif {}: {}", fname, e);
+                }
+            }
+
+            if let (Some(db), Some(dest_id)) = (db, dest_dir_id) {
+                if let Some(src_dir) = path.parent() {
+                    let src_str = src_dir.to_string_lossy().to_string();
+                    if let Ok(Some(src_rec)) = db.find_directory_by_path(&src_str) {
+                        match self.operation {
+                            ConsolidateOp::Move if self.move_update_db => {
+                                let _ = db.move_image_record(src_rec.id, &fname, dest_id);
+                            }
+                            ConsolidateOp::Copy if self.copy_rating || self.copy_tags || self.copy_notes => {
+                                let _ = db.copy_image_record(
+                                    src_rec.id, &fname, dest_id,
+                                    self.copy_rating, self.copy_tags, self.copy_notes,
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            succeeded += 1;
+        }
+
+        self.results = Some(ConsolidateResults { succeeded, skipped, failed });
+    }
+
+    fn draw(&mut self, ctx: &Context, db: Option<&Database>) -> bool {
+        let mut open = true;
+        let n = self.files.len();
+
+        egui::Window::new(format!("Consolidate {} Image{}", n, if n == 1 { "" } else { "s" }))
+            .collapsible(false)
+            .resizable(true)
+            .min_width(420.0)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                if let Some(ref results) = self.results {
+                    let op_label = match self.operation {
+                        ConsolidateOp::Copy => "copied",
+                        ConsolidateOp::Move => "moved",
+                    };
+                    ui.label(egui::RichText::new(format!(
+                        "✓ {} file{} {}.",
+                        results.succeeded,
+                        if results.succeeded == 1 { "" } else { "s" },
+                        op_label,
+                    )).strong());
+
+                    if !results.skipped.is_empty() {
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new(format!(
+                            "Skipped — already exist at destination ({}):", results.skipped.len()
+                        )).weak());
+                        egui::ScrollArea::vertical()
+                            .id_source("consolidate_skipped")
+                            .max_height(120.0)
+                            .show(ui, |ui| {
+                                for name in &results.skipped {
+                                    ui.add(egui::Label::new(
+                                        egui::RichText::new(name).monospace().small().weak()
+                                    ).truncate());
+                                }
+                            });
+                    }
+
+                    if !results.failed.is_empty() {
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new(format!(
+                            "Failed ({}):", results.failed.len()
+                        )).color(egui::Color32::from_rgb(220, 80, 80)));
+                        egui::ScrollArea::vertical()
+                            .id_source("consolidate_failed")
+                            .max_height(120.0)
+                            .show(ui, |ui| {
+                                for name in &results.failed {
+                                    ui.add(egui::Label::new(
+                                        egui::RichText::new(name).monospace().small()
+                                    ).truncate());
+                                }
+                            });
+                    }
+                    return;
+                }
+
+                // Destination
+                ui.horizontal(|ui| {
+                    ui.label("Destination:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.destination)
+                            .desired_width(220.0)
+                            .hint_text("Select a folder…")
+                    );
+                    if ui.button("Browse…").clicked() {
+                        if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                            self.destination = folder.to_string_lossy().to_string();
+                        }
+                    }
+                });
+
+                ui.add_space(6.0);
+
+                // Operation
+                ui.horizontal(|ui| {
+                    ui.label("Operation:");
+                    ui.radio_value(&mut self.operation, ConsolidateOp::Copy, "Copy");
+                    ui.radio_value(&mut self.operation, ConsolidateOp::Move, "Move");
+                });
+
+                ui.add_space(4.0);
+
+                match self.operation {
+                    ConsolidateOp::Copy => {
+                        ui.label("Copy database metadata:");
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut self.copy_rating, "Ratings");
+                            ui.checkbox(&mut self.copy_tags,   "Tags");
+                            ui.checkbox(&mut self.copy_notes,  "Notes");
+                        });
+                        ui.add_space(4.0);
+                    }
+                    ConsolidateOp::Move => {
+                        ui.checkbox(&mut self.move_update_db, "Update database record")
+                            .on_hover_text("Moves the rating, tags, and notes to the destination.\nUncheck to leave the source record in place; orphans can be pruned later via Database Health Check.");
+                        ui.add_space(4.0);
+                    }
+                }
+
+                ui.checkbox(&mut self.preserve_exif, "Preserve embedded EXIF metadata");
+
+                ui.add_space(8.0);
+
+                if self.confirmed {
+                    ui.separator();
+                    ui.add_space(4.0);
+                    let op_label = match self.operation {
+                        ConsolidateOp::Copy => "Copy",
+                        ConsolidateOp::Move => "Move",
+                    };
+                    ui.label(egui::RichText::new(format!(
+                        "{} {} file{} to:", op_label, n, if n == 1 { "" } else { "s" }
+                    )).strong());
+                    ui.add(egui::Label::new(
+                        egui::RichText::new(&self.destination).monospace().small()
+                    ).truncate());
+                    ui.add_space(6.0);
+
+                    if self.operation == ConsolidateOp::Move {
+                        ui.label(egui::RichText::new(
+                            "⚠ Files will be removed from their current location."
+                        ).color(egui::Color32::from_rgb(255, 180, 0)).small());
+                        ui.add_space(4.0);
+                    }
+
+                    ui.horizontal(|ui| {
+                        let color = match self.operation {
+                            ConsolidateOp::Move => egui::Color32::from_rgb(220, 160, 60),
+                            ConsolidateOp::Copy => egui::Color32::from_rgb(80, 200, 120),
+                        };
+                        let confirm_btn = egui::Button::new(
+                            egui::RichText::new(format!("{} now", op_label)).color(color)
+                        );
+                        if ui.add(confirm_btn).clicked() {
+                            self.execute(db);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.confirmed = false;
+                        }
+                    });
+                } else {
+                    let can_begin = !self.destination.is_empty() && !self.files.is_empty();
+                    ui.add_enabled_ui(can_begin, |ui| {
+                        if ui.button("Begin…").clicked() {
+                            self.confirmed = true;
+                        }
+                    });
+                }
+            });
+
+        open
+    }
+}
+
+fn strip_jpeg_exif(path: &Path) -> Result<(), String> {
+    use img_parts::{Bytes, ImageEXIF, jpeg::Jpeg};
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+    if ext != "jpg" && ext != "jpeg" { return Ok(()); }
+    let data = std::fs::read(path).map_err(|e| e.to_string())?;
+    let mut jpeg = Jpeg::from_bytes(Bytes::from(data)).map_err(|e| e.to_string())?;
+    jpeg.set_exif(None);
+    std::fs::write(path, jpeg.encoder().bytes()).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

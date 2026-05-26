@@ -490,6 +490,60 @@ impl Database {
         )?;
         Ok(())
     }
+
+    /// Copy selected metadata fields from one directory's record for `filename` to another.
+    /// Does nothing if the source has no record (sparse-storage — nothing to copy).
+    pub fn copy_image_record(
+        &self,
+        from_dir_id: i64,
+        filename:    &str,
+        to_dir_id:   i64,
+        copy_rating: bool,
+        copy_tags:   bool,
+        copy_notes:  bool,
+    ) -> Result<()> {
+        let Some(src) = self.get_image(from_dir_id, filename)? else { return Ok(()) };
+
+        if copy_rating {
+            if let Some(r) = src.rating {
+                self.set_rating(to_dir_id, filename, Some(r))?;
+            }
+        }
+        if copy_notes {
+            if let Some(ref note) = src.note {
+                if !note.is_empty() {
+                    self.set_note(to_dir_id, filename, Some(note))?;
+                }
+            }
+        }
+        if copy_tags {
+            let tags = self.get_image_tags(from_dir_id, filename)?;
+            if !tags.is_empty() {
+                let names: Vec<String> = tags.into_iter().map(|t| t.name).collect();
+                self.set_image_tags(to_dir_id, filename, &names)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Move a record: updates its directory to `to_dir_id`, preserving all metadata.
+    /// Any stale record already in `to_dir_id` for the same filename is removed first.
+    /// Does nothing if the source has no record.
+    pub fn move_image_record(
+        &self,
+        from_dir_id: i64,
+        filename:    &str,
+        to_dir_id:   i64,
+    ) -> Result<()> {
+        if self.get_image(from_dir_id, filename)?.is_none() { return Ok(()); }
+        let _ = self.delete_image(to_dir_id, filename);
+        self.conn.execute(
+            "UPDATE images SET directory_id = ?1, updated_at = ?2
+             WHERE directory_id = ?3 AND filename = ?4",
+            params![to_dir_id, Self::now(), from_dir_id, filename],
+        )?;
+        Ok(())
+    }
 }
 
 // ── Color Helpers ────────────────────────────────────────────────────────────

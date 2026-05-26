@@ -1485,7 +1485,7 @@ impl RivettApp {
                                 .lock_focus(true)
                         );
                         if note_res.lost_focus() {
-                            if let (Some(ref db), Some(ref path), Some(ref rec)) = (&self.db, &self.current_path, &self.current_record) {
+                            if let (Some(ref db), Some(ref _path), Some(ref rec)) = (&self.db, &self.current_path, &self.current_record) {
                                 let note_val = if self.note_buffer.trim().is_empty() { None } else { Some(self.note_buffer.trim()) };
                                 if let Err(e) = db.set_note(rec.directory_id, &rec.filename, note_val) {
                                     self.toast(format!("Failed to save note: {e}"), ToastKind::Error);
@@ -1833,6 +1833,20 @@ impl RivettApp {
                     .clicked()
                 {
                     self.utilities.open_tag_editor(self.db.as_ref());
+                    ui.close_menu();
+                }
+
+                let filtered_files = self.listing.as_ref()
+                    .map(|l| l.files.clone())
+                    .unwrap_or_default();
+                let n_filtered = filtered_files.len();
+                if ui.add_enabled(
+                    n_filtered > 0,
+                    egui::Button::new("Consolidate Filtered Images…"),
+                ).on_hover_text(format!("{} image{} in current view", n_filtered, if n_filtered == 1 { "" } else { "s" }))
+                .clicked()
+                {
+                    self.utilities.open_consolidate(filtered_files);
                     ui.close_menu();
                 }
 
