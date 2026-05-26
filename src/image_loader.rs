@@ -52,7 +52,10 @@ impl DirectoryListing {
                     files.retain(|p| {
                         let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
                         let Ok(Some(img_rec)) = db.get_image(d_rec.id, fname) else {
-                            return rating_filter.is_none() && tag_filter.is_empty();
+                            // No DB record → image is unrated and has no tags.
+                            let passes_rating = rating_filter.as_ref()
+                                .map_or(true, |rf| rf.op == crate::session::RatingFilterOp::Unrated);
+                            return passes_rating && tag_filter.is_empty();
                         };
 
                         if let Some(ref rf) = rating_filter {
@@ -69,7 +72,14 @@ impl DirectoryListing {
                     });
                 }
             } else if rating_filter.is_some() || !tag_filter.is_empty() {
-                files.clear();
+                // No directory record — folder has never been opened in Rivett.
+                // All files are unrated by definition, so keep them for the Unrated filter.
+                // Any other filter requires rating/tag data we don't have, so clear.
+                let unrated_only = tag_filter.is_empty()
+                    && rating_filter.as_ref().map_or(false, |rf| rf.op == crate::session::RatingFilterOp::Unrated);
+                if !unrated_only {
+                    files.clear();
+                }
             }
         }
 
@@ -604,6 +614,10 @@ impl ImageCache {
         } else {
             false
         }
+    }
+
+    pub fn has_any_pending(&self) -> bool {
+        self.pending.lock().map_or(false, |p| !p.is_empty())
     }
 
     pub fn contains(&self, path: &PathBuf) -> bool {

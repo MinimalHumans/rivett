@@ -2098,7 +2098,13 @@ impl eframe::App for RivettApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         let old_cache_len = self.image_cache.len();
         self.image_cache.poll();
-        ctx.request_repaint();
+        if self.image_cache.has_any_pending()
+            || !self.gpu_upload_queue.is_empty()
+            || self.gpu_upload_pending
+            || self.viewer.loading
+        {
+            ctx.request_repaint();
+        }
 
         // If something was loaded into the cache, check if it's the current image
         // that was previously in a loading state.
