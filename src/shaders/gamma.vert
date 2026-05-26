@@ -3,6 +3,7 @@ precision mediump float;
 
 uniform vec4 u_image_rect;  // [min_x, min_y, max_x, max_y] in logical pixels
 uniform vec4 u_canvas_rect; // [min_x, min_y, max_x, max_y] in logical pixels
+uniform int  u_rotation;    // 0: 0, 1: 90 CW, 2: 180, 3: 270 CW
 
 layout (location = 0) in vec2 a_pos; // 0..1 coordinates
 
@@ -23,6 +24,15 @@ void main() {
     
     gl_Position = vec4(x, y, 0.0, 1.0);
     
-    // UVs are 0..1 for the full image quad
-    v_tex_coord = a_pos;
+    // UV transformation based on rotation
+    // a_pos is (0,0) top-left, (1,1) bottom-right in the quad
+    if (u_rotation == 1) { // 90 CW
+        v_tex_coord = vec2(a_pos.y, 1.0 - a_pos.x);
+    } else if (u_rotation == 2) { // 180
+        v_tex_coord = vec2(1.0 - a_pos.x, 1.0 - a_pos.y);
+    } else if (u_rotation == 3) { // 270 CW
+        v_tex_coord = vec2(1.0 - a_pos.y, a_pos.x);
+    } else { // 0
+        v_tex_coord = a_pos;
+    }
 }

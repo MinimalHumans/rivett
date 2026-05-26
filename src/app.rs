@@ -3,8 +3,7 @@
 use eframe::CreationContext;
 use egui::{CentralPanel, Context, Key, Vec2};
 use std::time::{Duration, Instant};
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::mpsc;
+use std::collections::{HashSet, VecDeque};
 
 #[cfg(target_os = "windows")]
 use chrono;
@@ -68,14 +67,9 @@ pub struct RivettApp {
     utilities:       UtilitiesState,
 
     // GPU pre-upload pipeline
-    /// Rotation-applied f32 pixel data ready to upload, keyed by path.
-    rotated_cache:   HashMap<std::path::PathBuf, (Arc<[f32]>, u32, u32)>,
-    /// Paths for which a background rotation thread is currently running.
-    rotation_pending: HashSet<std::path::PathBuf>,
-    /// Receives completed (path, rotated_f32, w, h) from background threads.
-    rotation_rx:     mpsc::Receiver<(std::path::PathBuf, Arc<[f32]>, u32, u32)>,
-    rotation_tx:     mpsc::SyncSender<(std::path::PathBuf, Arc<[f32]>, u32, u32)>,
-    /// Ordered queue of rotated images awaiting GPU texture upload (one per frame).
+    /// Paths for which a background upload is currently pending.
+    upload_pending:  HashSet<std::path::PathBuf>,
+    /// Ordered queue of images awaiting GPU texture upload (one per frame).
     gpu_upload_queue: VecDeque<(std::path::PathBuf, Arc<[f32]>, u32, u32)>,
     /// True while the current image's GPU texture has not yet been uploaded.
     gpu_upload_pending: bool,
@@ -107,8 +101,6 @@ impl RivettApp {
             cc.egui_ctx.memory_mut(|mem| mem.data.insert_temp(egui::Id::new("gl_context"), SendSyncGl(gl.clone())));
         }
 
-        let (rotation_tx, rotation_rx) = mpsc::sync_channel(8);
-
         let mut app = Self {
             db,
             viewer:          ViewerState::new(),
@@ -132,10 +124,7 @@ impl RivettApp {
             pending_drag_out:     false,
             save_as_state:   None,
             utilities:       UtilitiesState::default(),
-            rotated_cache:   HashMap::new(),
-            rotation_pending: HashSet::new(),
-            rotation_rx,
-            rotation_tx,
+            upload_pending:  HashSet::new(),
             gpu_upload_queue: VecDeque::new(),
             gpu_upload_pending: false,
             settings,
@@ -181,18 +170,17 @@ impl RivettApp {
         result
     }
 
-    /// Spawn a background thread to apply rotation to `img` and send the result
-    /// over `rotation_tx`. No-op if already cached, pending, or queued.
-    fn queue_rotation_for(&mut self, path: std::path::PathBuf, img: crate::image_loader::DecodedImage, rotation: Rotation) {
-        if self.rotated_cache.contains_key(&path) { return; }
-        if self.rotation_pending.contains(&path) { return; }
+    /// Queue an original image for GPU texture upload.
+    fn queue_upload_for(&mut self, path: std::path::PathBuf, img: crate::image_loader::DecodedImage) {
+        if self.upload_pending.contains(&path) { return; }
         if self.gpu_upload_queue.iter().any(|(p, _, _, _)| p == &path) { return; }
-        self.rotation_pending.insert(path.clone());
-        let tx = self.rotation_tx.clone();
-        std::thread::spawn(move || {
-            let (rgba, w, h) = crate::viewer::apply_rotation(&img, rotation);
-            let _ = tx.send((path, rgba, w, h));
-        });
+        
+        let gpu_ready = self.gamma_renderer.as_ref()
+            .map_or(false, |r| r.lock().unwrap().has_cached(&path));
+        if gpu_ready { return; }
+
+        self.upload_pending.insert(path.clone());
+        self.gpu_upload_queue.push_back((path, img.rgba.clone(), img.width, img.height));
     }
 
     // ── Opening / Loading ─────────────────────────────────────────────────
@@ -228,11 +216,6 @@ impl RivettApp {
             }
         };
 
-        // If we are already showing this image (and it's not in a loading/error state), skip.
-        if self.current_path.as_ref() == Some(&path) && self.viewer.has_image() && !self.viewer.loading && self.viewer.load_error.is_none() {
-            return;
-        }
-
         // Clear existing image-status toast when moving to a new image
         if let Some(ref t) = self.toast {
             if t.kind == ToastKind::ImageStatus {
@@ -253,8 +236,6 @@ impl RivettApp {
         let rotation = self.session.rotation_for(&path);
         let mut adjustments = self.session.adjustments_for(&path).unwrap_or_default();
 
-        // Clone the image out of the cache to avoid holding the &mut borrow while calling
-        // queue_rotation_for (which also needs &mut self). Cheap: Arc inside DecodedImage.
         if let Some(img) = self.image_cache.get(&path).cloned() {
             // Auto-set 2.2 gamma for linear/HDR images if no session adjustments yet
             if img.is_hdr && self.session.adjustments_for(&path).is_none() {
@@ -273,8 +254,8 @@ impl RivettApp {
                 self.viewer.load_image_meta(ctx, &img, rotation, adjustments, preserve_zoom);
                 self.gpu_upload_pending = false;
             } else {
-                // GPU texture not ready yet; queue the rotation+upload in the background.
-                self.queue_rotation_for(path.clone(), img.clone(), rotation);
+                // GPU texture not ready yet; queue the upload in the background.
+                self.queue_upload_for(path.clone(), img.clone());
                 self.gpu_upload_pending = true;
                 // Set viewer metadata so zoom/pan math works while we wait.
                 self.viewer.load_image_meta(ctx, &img, rotation, adjustments, preserve_zoom);
@@ -291,20 +272,18 @@ impl RivettApp {
             }
         }
 
-        // CPU prefetch ±2; GPU rotation queue ±1 for neighbors already in CPU cache.
+        // CPU prefetch ±2; GPU queue ±1 for neighbors already in CPU cache.
         let neighbors_2 = self.neighbor_paths(2);
         let neighbors_1 = self.neighbor_paths(1);
         for p in &neighbors_2 {
             self.image_cache.prefetch(p.clone());
         }
-        // Collect neighbors that are in the CPU cache before calling queue_rotation_for
-        // (image_cache.get takes &mut self, can't interleave with other &mut calls).
+        
         let neighbor_imgs: Vec<_> = neighbors_1.iter().filter_map(|p| {
             self.image_cache.get(p).map(|img| (p.clone(), img.clone()))
         }).collect();
         for (p, img) in neighbor_imgs {
-            let rot = self.session.rotation_for(&p);
-            self.queue_rotation_for(p, img, rot);
+            self.queue_upload_for(p, img);
         }
 
         self.metadata = read_metadata(&path);
@@ -470,9 +449,7 @@ impl RivettApp {
         let Some(path) = self.current_path.clone() else { return };
         if cw { self.session.rotate_cw(path.clone()); } else { self.session.rotate_ccw(path.clone()); }
 
-        // Invalidate any stale pre-rotated data for this path.
-        self.rotated_cache.remove(&path);
-        self.rotation_pending.remove(&path);
+        self.upload_pending.remove(&path);
         self.gpu_upload_queue.retain(|(p, _, _, _)| p != &path);
         if let Some(ref r) = self.gamma_renderer {
             r.lock().unwrap().invalidate(None, &path);
@@ -2130,23 +2107,13 @@ impl eframe::App for RivettApp {
                 if self.viewer.loading && self.image_cache.contains(&path) {
                     self.load_current(ctx, true);
                 }
-                // Also queue rotation for newly cached neighbors.
+                // Also queue upload for newly cached neighbors.
                 let neighbor_imgs: Vec<_> = self.neighbor_paths(1).into_iter().filter_map(|p| {
                     self.image_cache.get(&p).map(|img| (p, img.clone()))
                 }).collect();
                 for (p, img) in neighbor_imgs {
-                    let rot = self.session.rotation_for(&p);
-                    self.queue_rotation_for(p, img, rot);
+                    self.queue_upload_for(p, img);
                 }
-            }
-        }
-
-        // Drain completed rotation results from background threads.
-        while let Ok((path, rgba, w, h)) = self.rotation_rx.try_recv() {
-            self.rotation_pending.remove(&path);
-            self.rotated_cache.insert(path.clone(), (rgba.clone(), w, h));
-            if !self.gpu_upload_queue.iter().any(|(p, _, _, _)| p == &path) {
-                self.gpu_upload_queue.push_back((path, rgba, w, h));
             }
         }
 
@@ -2285,9 +2252,6 @@ impl eframe::App for RivettApp {
                     self.gpu_upload_pending = false;
                 }
 
-                // Evict CPU rotated_cache for paths outside the keep window.
-                self.rotated_cache.retain(|p, _| keep.contains(p));
-
                 ctx.request_repaint();
             }
 
@@ -2303,11 +2267,12 @@ impl eframe::App for RivettApp {
                         remap_min: self.viewer.remap_min,
                         remap_max: self.viewer.remap_max,
                     };
+                    let rotation = self.session.rotation_for(self.current_path.as_ref().unwrap());
                     ui.painter().add(egui::PaintCallback {
                         rect: canvas, // Cover the entire canvas to allow for zoom/pan clipping
                         callback: Arc::new(egui_glow::CallbackFn::new(move |_info, painter| {
                             let renderer = renderer.lock().unwrap();
-                            renderer.paint(painter.gl(), rect, canvas, adj);
+                            renderer.paint(painter.gl(), rect, canvas, adj, rotation);
                         })),
                     });
                 } else {

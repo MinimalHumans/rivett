@@ -160,7 +160,7 @@ impl GammaRenderer {
         }
     }
 
-    pub fn paint(&self, gl: &glow::Context, image_rect: egui::Rect, canvas_rect: egui::Rect, adj: crate::session::ImageAdjustments) {
+    pub fn paint(&self, gl: &glow::Context, image_rect: egui::Rect, canvas_rect: egui::Rect, adj: crate::session::ImageAdjustments, rotation: crate::session::Rotation) {
         let tex = match &self.active_path {
             Some(p) => match self.tex_cache.get(p) {
                 Some((tex, _, _)) => *tex,
@@ -171,6 +171,9 @@ impl GammaRenderer {
 
         unsafe {
             gl.use_program(Some(self.program));
+
+            let rot_loc = gl.get_uniform_location(self.program, "u_rotation");
+            gl.uniform_1_i32(rot_loc.as_ref(), rotation.as_u8() as i32);
 
             let gamma_loc = gl.get_uniform_location(self.program, "u_gamma");
             gl.uniform_1_f32(gamma_loc.as_ref(), adj.gamma);

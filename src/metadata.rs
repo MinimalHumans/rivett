@@ -210,13 +210,18 @@ pub fn get_orientation(path: &Path) -> Option<u32> {
     
     if let Ok(reader) = img_reader {
         match reader.format() {
-            Some(image::ImageFormat::Jpeg) | Some(image::ImageFormat::Tiff) | Some(image::ImageFormat::WebP) => {
-                let file = File::open(path).ok()?;
-                let mut reader = BufReader::new(file);
-                let exifreader = exif::Reader::new();
-                let exif = exifreader.read_from_container(&mut reader).ok()?;
-                return exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)?
-                    .value.get_uint(0);
+            Some(image::ImageFormat::Jpeg) | Some(image::ImageFormat::Tiff) | Some(image::ImageFormat::WebP) | Some(image::ImageFormat::Png) => {
+                if let Ok(file) = File::open(path) {
+                    let mut reader = BufReader::new(file);
+                    let exifreader = exif::Reader::new();
+                    if let Ok(exif) = exifreader.read_from_container(&mut reader) {
+                        if let Some(field) = exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY) {
+                            if let Some(val) = field.value.get_uint(0) {
+                                return Some(val);
+                            }
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -224,13 +229,17 @@ pub fn get_orientation(path: &Path) -> Option<u32> {
 
     // Fallback: Deep scan for RAW files (like .CR3) where TIFF headers are buried.
     if let Ok(offset) = find_tiff_header(path) {
-        let mut file = File::open(path).ok()?;
-        file.seek(SeekFrom::Start(offset)).ok()?;
-        let mut reader = BufReader::new(file);
-        let exifreader = exif::Reader::new();
-        let exif = exifreader.read_from_container(&mut reader).ok()?;
-        return exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)?
-            .value.get_uint(0);
+        if let Ok(mut file) = File::open(path) {
+            if file.seek(SeekFrom::Start(offset)).is_ok() {
+                let mut reader = BufReader::new(file);
+                let exifreader = exif::Reader::new();
+                if let Ok(exif) = exifreader.read_from_container(&mut reader) {
+                    if let Some(field) = exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY) {
+                        return field.value.get_uint(0);
+                    }
+                }
+            }
+        }
     }
 
     None
