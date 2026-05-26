@@ -311,6 +311,7 @@ impl RivettApp {
 
     fn navigate_next_n(&mut self, ctx: &Context, preserve_zoom: bool, n: usize) {
         let mut moved = false;
+        let mut at_boundary = false;
         if let Some(ref mut listing) = self.listing {
             for _ in 0..n {
                 let mut step = false;
@@ -320,11 +321,18 @@ impl RivettApp {
                         if !self.session.ignored_images.contains(p) { break; }
                     }
                 }
-                if !step { break; }
+                if !step {
+                    if !moved && !listing.is_empty() { at_boundary = true; }
+                    break;
+                }
                 moved = true;
             }
         }
-        if moved { self.load_current(ctx, preserve_zoom); }
+        if moved {
+            self.load_current(ctx, preserve_zoom);
+        } else if at_boundary {
+            self.toast("End of images", ToastKind::ImageStatus);
+        }
     }
 
     fn navigate_prev(&mut self, ctx: &Context, preserve_zoom: bool) {
@@ -333,6 +341,7 @@ impl RivettApp {
 
     fn navigate_prev_n(&mut self, ctx: &Context, preserve_zoom: bool, n: usize) {
         let mut moved = false;
+        let mut at_boundary = false;
         if let Some(ref mut listing) = self.listing {
             for _ in 0..n {
                 let mut step = false;
@@ -342,11 +351,18 @@ impl RivettApp {
                         if !self.session.ignored_images.contains(p) { break; }
                     }
                 }
-                if !step { break; }
+                if !step {
+                    if !moved && !listing.is_empty() { at_boundary = true; }
+                    break;
+                }
                 moved = true;
             }
         }
-        if moved { self.load_current(ctx, preserve_zoom); }
+        if moved {
+            self.load_current(ctx, preserve_zoom);
+        } else if at_boundary {
+            self.toast("Start of images", ToastKind::ImageStatus);
+        }
     }
 
     // ── Navigate to parent directory ─────────────────────────────────────
@@ -2422,12 +2438,12 @@ impl Toast {
         Self { message, start: Instant::now(), kind }
     }
     fn alive(&self) -> bool {
-        self.start.elapsed() < Duration::from_secs(3)
+        self.start.elapsed() < Duration::from_millis(1200)
     }
     fn alpha(&self) -> f32 {
         let elapsed = self.start.elapsed().as_secs_f32();
-        if elapsed < 0.2 { elapsed / 0.2 }
-        else if elapsed > 2.5 { 1.0 - (elapsed - 2.5) / 0.5 }
+        if elapsed < 0.05 { elapsed / 0.05 }
+        else if elapsed > 0.9 { 1.0 - (elapsed - 0.9) / 0.3 }
         else { 1.0 }
     }
 }
