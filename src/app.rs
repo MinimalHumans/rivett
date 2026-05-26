@@ -3,6 +3,8 @@
 use eframe::CreationContext;
 use egui::{CentralPanel, Context, Key, Vec2};
 use std::time::{Duration, Instant};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::mpsc;
 
 #[cfg(target_os = "windows")]
 use chrono;
@@ -65,6 +67,19 @@ pub struct RivettApp {
     // Utility windows
     utilities:       UtilitiesState,
 
+    // GPU pre-upload pipeline
+    /// Rotation-applied f32 pixel data ready to upload, keyed by path.
+    rotated_cache:   HashMap<std::path::PathBuf, (Arc<[f32]>, u32, u32)>,
+    /// Paths for which a background rotation thread is currently running.
+    rotation_pending: HashSet<std::path::PathBuf>,
+    /// Receives completed (path, rotated_f32, w, h) from background threads.
+    rotation_rx:     mpsc::Receiver<(std::path::PathBuf, Arc<[f32]>, u32, u32)>,
+    rotation_tx:     mpsc::SyncSender<(std::path::PathBuf, Arc<[f32]>, u32, u32)>,
+    /// Ordered queue of rotated images awaiting GPU texture upload (one per frame).
+    gpu_upload_queue: VecDeque<(std::path::PathBuf, Arc<[f32]>, u32, u32)>,
+    /// True while the current image's GPU texture has not yet been uploaded.
+    gpu_upload_pending: bool,
+
     #[allow(dead_code)]
     settings:        AppSettings,
 }
@@ -92,6 +107,8 @@ impl RivettApp {
             cc.egui_ctx.memory_mut(|mem| mem.data.insert_temp(egui::Id::new("gl_context"), SendSyncGl(gl.clone())));
         }
 
+        let (rotation_tx, rotation_rx) = mpsc::sync_channel(8);
+
         let mut app = Self {
             db,
             viewer:          ViewerState::new(),
@@ -115,6 +132,12 @@ impl RivettApp {
             pending_drag_out:     false,
             save_as_state:   None,
             utilities:       UtilitiesState::default(),
+            rotated_cache:   HashMap::new(),
+            rotation_pending: HashSet::new(),
+            rotation_rx,
+            rotation_tx,
+            gpu_upload_queue: VecDeque::new(),
+            gpu_upload_pending: false,
             settings,
         };
 
@@ -129,6 +152,47 @@ impl RivettApp {
 
     fn toast(&mut self, msg: impl Into<String>, kind: ToastKind) {
         self.toast = Some(Toast::new(msg.into(), kind));
+    }
+
+    // ── GPU pre-upload helpers ────────────────────────────────────────────
+
+    /// Collect up to `n` non-ignored neighbor paths in each direction from cursor.
+    fn neighbor_paths(&self, n: usize) -> Vec<std::path::PathBuf> {
+        let Some(ref listing) = self.listing else { return vec![] };
+        let idx = listing.current_index;
+        let mut result = Vec::with_capacity(n * 2);
+
+        let mut i = idx + 1;
+        let mut found = 0;
+        while i < listing.files.len() && found < n {
+            let p = &listing.files[i];
+            if !self.session_is_ignored(p) { result.push(p.clone()); found += 1; }
+            i += 1;
+        }
+
+        let mut i = idx as i64 - 1;
+        let mut found = 0;
+        while i >= 0 && found < n {
+            let p = &listing.files[i as usize];
+            if !self.session_is_ignored(p) { result.push(p.clone()); found += 1; }
+            i -= 1;
+        }
+
+        result
+    }
+
+    /// Spawn a background thread to apply rotation to `img` and send the result
+    /// over `rotation_tx`. No-op if already cached, pending, or queued.
+    fn queue_rotation_for(&mut self, path: std::path::PathBuf, img: crate::image_loader::DecodedImage, rotation: Rotation) {
+        if self.rotated_cache.contains_key(&path) { return; }
+        if self.rotation_pending.contains(&path) { return; }
+        if self.gpu_upload_queue.iter().any(|(p, _, _, _)| p == &path) { return; }
+        self.rotation_pending.insert(path.clone());
+        let tx = self.rotation_tx.clone();
+        std::thread::spawn(move || {
+            let (rgba, w, h) = crate::viewer::apply_rotation(&img, rotation);
+            let _ = tx.send((path, rgba, w, h));
+        });
     }
 
     // ── Opening / Loading ─────────────────────────────────────────────────
@@ -189,15 +253,35 @@ impl RivettApp {
         let rotation = self.session.rotation_for(&path);
         let mut adjustments = self.session.adjustments_for(&path).unwrap_or_default();
 
-        if let Some(img) = self.image_cache.get(&path) {
+        // Clone the image out of the cache to avoid holding the &mut borrow while calling
+        // queue_rotation_for (which also needs &mut self). Cheap: Arc inside DecodedImage.
+        if let Some(img) = self.image_cache.get(&path).cloned() {
             // Auto-set 2.2 gamma for linear/HDR images if no session adjustments yet
             if img.is_hdr && self.session.adjustments_for(&path).is_none() {
                 adjustments.gamma = 2.2;
                 self.session.set_adjustments(path.clone(), adjustments);
             }
-            self.viewer.load_image(ctx, img, rotation, adjustments, preserve_zoom);
+
+            // Fast path: GPU texture already pre-uploaded — instant swap, no stall.
+            let gpu_ready = self.gamma_renderer.as_ref()
+                .map_or(false, |r| r.lock().unwrap().has_cached(&path));
+
+            if gpu_ready {
+                if let Some(ref r) = self.gamma_renderer {
+                    r.lock().unwrap().set_active(path.clone());
+                }
+                self.viewer.load_image_meta(ctx, &img, rotation, adjustments, preserve_zoom);
+                self.gpu_upload_pending = false;
+            } else {
+                // GPU texture not ready yet; queue the rotation+upload in the background.
+                self.queue_rotation_for(path.clone(), img.clone(), rotation);
+                self.gpu_upload_pending = true;
+                // Set viewer metadata so zoom/pan math works while we wait.
+                self.viewer.load_image_meta(ctx, &img, rotation, adjustments, preserve_zoom);
+            }
         } else {
             // Not in cache. If already pending in background, just set loading state.
+            self.gpu_upload_pending = false;
             if self.image_cache.is_pending(&path) {
                 self.viewer.set_loading();
             } else {
@@ -207,27 +291,20 @@ impl RivettApp {
             }
         }
 
-        if let Some(ref listing) = self.listing {
-            // Next
-            let mut i = listing.current_index + 1;
-            while i < listing.files.len() {
-                let p = &listing.files[i];
-                if !self.session_is_ignored(p) {
-                    self.image_cache.prefetch(p.clone());
-                    break;
-                }
-                i += 1;
-            }
-            // Prev
-            let mut i = listing.current_index as i32 - 1;
-            while i >= 0 {
-                let p = &listing.files[i as usize];
-                if !self.session_is_ignored(p) {
-                    self.image_cache.prefetch(p.clone());
-                    break;
-                }
-                i -= 1;
-            }
+        // CPU prefetch ±2; GPU rotation queue ±1 for neighbors already in CPU cache.
+        let neighbors_2 = self.neighbor_paths(2);
+        let neighbors_1 = self.neighbor_paths(1);
+        for p in &neighbors_2 {
+            self.image_cache.prefetch(p.clone());
+        }
+        // Collect neighbors that are in the CPU cache before calling queue_rotation_for
+        // (image_cache.get takes &mut self, can't interleave with other &mut calls).
+        let neighbor_imgs: Vec<_> = neighbors_1.iter().filter_map(|p| {
+            self.image_cache.get(p).map(|img| (p.clone(), img.clone()))
+        }).collect();
+        for (p, img) in neighbor_imgs {
+            let rot = self.session.rotation_for(&p);
+            self.queue_rotation_for(p, img, rot);
         }
 
         self.metadata = read_metadata(&path);
@@ -391,7 +468,16 @@ impl RivettApp {
 
     fn rotate_current(&mut self, cw: bool, ctx: &Context) {
         let Some(path) = self.current_path.clone() else { return };
-        if cw { self.session.rotate_cw(path); } else { self.session.rotate_ccw(path); }
+        if cw { self.session.rotate_cw(path.clone()); } else { self.session.rotate_ccw(path.clone()); }
+
+        // Invalidate any stale pre-rotated data for this path.
+        self.rotated_cache.remove(&path);
+        self.rotation_pending.remove(&path);
+        self.gpu_upload_queue.retain(|(p, _, _, _)| p != &path);
+        if let Some(ref r) = self.gamma_renderer {
+            r.lock().unwrap().invalidate(None, &path);
+        }
+
         self.load_current(ctx, true);
     }
 
@@ -2044,6 +2130,23 @@ impl eframe::App for RivettApp {
                 if self.viewer.loading && self.image_cache.contains(&path) {
                     self.load_current(ctx, true);
                 }
+                // Also queue rotation for newly cached neighbors.
+                let neighbor_imgs: Vec<_> = self.neighbor_paths(1).into_iter().filter_map(|p| {
+                    self.image_cache.get(&p).map(|img| (p, img.clone()))
+                }).collect();
+                for (p, img) in neighbor_imgs {
+                    let rot = self.session.rotation_for(&p);
+                    self.queue_rotation_for(p, img, rot);
+                }
+            }
+        }
+
+        // Drain completed rotation results from background threads.
+        while let Ok((path, rgba, w, h)) = self.rotation_rx.try_recv() {
+            self.rotation_pending.remove(&path);
+            self.rotated_cache.insert(path.clone(), (rgba.clone(), w, h));
+            if !self.gpu_upload_queue.iter().any(|(p, _, _, _)| p == &path) {
+                self.gpu_upload_queue.push_back((path, rgba, w, h));
             }
         }
 
@@ -2145,36 +2248,53 @@ impl eframe::App for RivettApp {
 
             self.draw_context_menu(&response, ctx);
 
+            // Process one GPU pre-upload per frame (from the rotation pipeline).
+            // This runs regardless of whether viewer has a texture, so uploads
+            // can proceed even while the loading spinner is showing.
+            if let Some((path, rgba, w, h)) = self.gpu_upload_queue.pop_front() {
+                let is_current = self.current_path.as_ref() == Some(&path);
+
+                // Keep: current image ± 1 neighbors.
+                let keep: HashSet<std::path::PathBuf> = {
+                    let mut s = HashSet::new();
+                    if let Some(ref p) = self.current_path { s.insert(p.clone()); }
+                    for n in self.neighbor_paths(1) { s.insert(n); }
+                    s
+                };
+
+                let renderer = self.gamma_renderer.get_or_insert_with(|| {
+                    let gl = cc_gl_from_ctx(ctx).expect("Glow context not found");
+                    Arc::new(Mutex::new(GammaRenderer::new(&gl)))
+                }).clone();
+
+                let path_clone = path.clone();
+                let keep_closure = keep.clone();
+                ui.painter().add(egui::PaintCallback {
+                    rect: canvas,
+                    callback: Arc::new(egui_glow::CallbackFn::new(move |_info, painter| {
+                        let mut r = renderer.lock().unwrap();
+                        r.cache_texture(painter.gl(), path_clone.clone(), w, h, &rgba);
+                        r.evict_stale(painter.gl(), &keep_closure);
+                    })),
+                });
+
+                if is_current {
+                    if let Some(ref r) = self.gamma_renderer {
+                        r.lock().unwrap().set_active(path.clone());
+                    }
+                    self.gpu_upload_pending = false;
+                }
+
+                // Evict CPU rotated_cache for paths outside the keep window.
+                self.rotated_cache.retain(|p, _| keep.contains(p));
+
+                ctx.request_repaint();
+            }
+
             if self.viewer.texture.is_some() {
                 let rect = self.viewer.image_rect(canvas);
 
-                // 1. Handle texture upload if needed
-                if self.viewer.needs_texture_upload {
-                    if let Some(f32_data) = self.viewer.f32_data.take() {
-                        let renderer = self.gamma_renderer.get_or_insert_with(|| {
-                            let gl = cc_gl_from_ctx(ctx).expect("Glow context not found");
-                            Arc::new(Mutex::new(GammaRenderer::new(&gl)))
-                        }).clone();
-                        
-                        let needs_upload = self.viewer.needs_texture_upload;
-                        let (w, h) = (self.viewer.image_size.x as u32, self.viewer.image_size.y as u32);
-                        
-                        // We use a callback to upload because we need the 'glow' context
-                        let upload_renderer = renderer.clone();
-                        ui.painter().add(egui::PaintCallback {
-                            rect,
-                            callback: Arc::new(egui_glow::CallbackFn::new(move |_info, painter| {
-                                let mut renderer = upload_renderer.lock().unwrap();
-                                if needs_upload {
-                                    renderer.update_texture(painter.gl(), w, h, &f32_data);
-                                }
-                            })),
-                        });
-                        self.viewer.needs_texture_upload = false;
-                    }
-                }
-
-                // 2. Render with gamma shader
+                // Render with gamma shader
                 if let Some(renderer) = &self.gamma_renderer {
                     let renderer = renderer.clone();
                     let adj = crate::session::ImageAdjustments {
@@ -2199,6 +2319,13 @@ impl eframe::App for RivettApp {
                             egui::Color32::WHITE,
                         );
                     }
+                }
+
+                // Corner spinner: overlays the previous image while the next one loads.
+                if self.gpu_upload_pending || self.viewer.loading {
+                    let badge_center = egui::pos2(canvas.min.x + 22.0, canvas.min.y + 22.0);
+                    let badge_rect = egui::Rect::from_center_size(badge_center, egui::vec2(28.0, 28.0));
+                    ui.put(badge_rect, egui::Spinner::new().size(18.0));
                 }
             } else if self.viewer.loading {
                 ui.centered_and_justified(|ui| {

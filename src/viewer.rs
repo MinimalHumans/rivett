@@ -126,10 +126,10 @@ impl ViewerState {
     /// Re-calculate the texture using current rotation settings.
     pub fn refresh_texture(&mut self, ctx: &Context) {
         let Some(ref img) = self.last_image else { return };
-        
+
         // 1. Apply rotation
         let (rgba_f32, w, h) = apply_rotation(img, self.last_rotation);
-        
+
         // 2. Store f32 data for the custom shader and signal upload
         self.image_size = Vec2::new(w as f32, h as f32);
         self.f32_data = Some(rgba_f32);
@@ -144,6 +144,39 @@ impl ViewerState {
             color_image,
             TextureOptions::default(),
         ));
+    }
+
+    /// Update viewer metadata from a decoded image without running apply_rotation
+    /// or setting needs_texture_upload. Used when the GPU texture is set via
+    /// GammaRenderer::set_active() — navigation fast-path.
+    pub fn load_image_meta(&mut self, ctx: &Context, img: &DecodedImage, rotation: Rotation, adjustments: crate::session::ImageAdjustments, preserve_zoom: bool) {
+        self.load_error   = None;
+        self.loading      = false;
+        self.last_image   = Some(img.clone());
+        self.last_rotation = rotation;
+        self.exposure     = adjustments.exposure;
+        self.gamma        = adjustments.gamma;
+        self.remap_min    = adjustments.remap_min;
+        self.remap_max    = adjustments.remap_max;
+
+        // Compute post-rotation dimensions without allocating the full buffer.
+        let (w, h) = match rotation {
+            Rotation::Cw90 | Rotation::Cw270 => (img.height, img.width),
+            _ => (img.width, img.height),
+        };
+        self.image_size = Vec2::new(w as f32, h as f32);
+
+        let color_image = egui::ColorImage::from_rgba_unmultiplied([1, 1], &[0, 0, 0, 0]);
+        self.texture = Some(ctx.load_texture(
+            "current_image_placeholder",
+            color_image,
+            TextureOptions::default(),
+        ));
+
+        if !preserve_zoom {
+            self.fit_to_window = true;
+            self.pan = Vec2::ZERO;
+        }
     }
 
     pub fn set_gamma(&mut self, gamma: f32, _ctx: &Context) {
@@ -246,9 +279,9 @@ impl ViewerState {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-fn apply_rotation(img: &DecodedImage, rotation: Rotation) -> (Arc<[f32]>, usize, usize) {
+pub(crate) fn apply_rotation(img: &DecodedImage, rotation: Rotation) -> (Arc<[f32]>, u32, u32) {
     if rotation.is_identity() {
-        return (img.rgba.clone(), img.width as usize, img.height as usize);
+        return (img.rgba.clone(), img.width, img.height);
     }
 
     let buffer = image::ImageBuffer::<image::Rgba<f32>, Vec<f32>>::from_raw(img.width, img.height, img.rgba.to_vec()).unwrap();
@@ -263,7 +296,7 @@ fn apply_rotation(img: &DecodedImage, rotation: Rotation) -> (Arc<[f32]>, usize,
 
     let rgba = dimg.to_rgba32f();
     let (w, h) = rgba.dimensions();
-    (Arc::from(rgba.into_raw()), w as usize, h as usize)
+    (Arc::from(rgba.into_raw()), w, h)
 }
 
 // ---------------------------------------------------------------------------
