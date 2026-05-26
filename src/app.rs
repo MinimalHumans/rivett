@@ -1090,8 +1090,8 @@ impl RivettApp {
                             label_kv(ui, "Folder", parent.display().to_string());
                         }
 
+                        #[cfg(target_os = "windows")]
                         if let Ok(meta) = path.metadata() {
-                            #[cfg(target_os = "windows")]
                             if let Ok(modified) = meta.modified() {
                                 let datetime: chrono::DateTime<chrono::Local> = modified.into();
                                 label_kv(ui, "Date", datetime.format("%Y-%m-%d %H:%M:%S").to_string());

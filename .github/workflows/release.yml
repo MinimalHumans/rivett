@@ -41,6 +41,7 @@ jobs:
             target/wix/*.msi
           draft: false
           prerelease: false
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -74,6 +75,7 @@ jobs:
             target/debian/*.deb
           draft: false
           prerelease: false
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -85,17 +87,18 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-bundle
         run: cargo install cargo-bundle --locked
-      - name: Build DMG
+      - name: Build .app bundle
         run: cargo bundle --release --format osx
-      - name: Create DMG (manual step if needed)
+      - name: Zip .app bundle
         run: |
-          ls -R target/release/bundle/osx/
+          cd target/release/bundle/osx
+          zip -r ../../../../rivett-macos.zip rivett.app
       - name: Upload macOS Bundle
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            target/release/bundle/osx/*.app
+          files: rivett-macos.zip
           draft: false
           prerelease: false
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
