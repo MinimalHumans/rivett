@@ -640,13 +640,20 @@ impl ImageCache {
         }
 
         let tx = self.tx.clone();
+        let pending_ref = Arc::clone(&self.pending);
         let p = path.clone();
-        let handle = thread::spawn(move || {
-            if let Ok(img) = load_image(&p) {
-                let _ = tx.send((p, img));
+        // Insert before spawning so has_any_pending() is accurate and the entry exists
+        // before the failure-cleanup code in the thread can run.
+        pending.insert(path, thread::spawn(move || {
+            match load_image(&p) {
+                Ok(img) => { let _ = tx.send((p, img)); }
+                Err(_) => {
+                    if let Ok(mut m) = pending_ref.lock() {
+                        m.remove(&p);
+                    }
+                }
             }
-        });
-        pending.insert(path, handle);
+        }));
     }
 }
 

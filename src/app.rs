@@ -67,8 +67,6 @@ pub struct RivettApp {
     utilities:       UtilitiesState,
 
     // GPU pre-upload pipeline
-    /// Paths for which a background upload is currently pending.
-    upload_pending:  HashSet<std::path::PathBuf>,
     /// Ordered queue of images awaiting GPU texture upload (one per frame).
     gpu_upload_queue: VecDeque<(std::path::PathBuf, Arc<[f32]>, u32, u32)>,
     /// True while the current image's GPU texture has not yet been uploaded.
@@ -124,7 +122,6 @@ impl RivettApp {
             pending_drag_out:     false,
             save_as_state:   None,
             utilities:       UtilitiesState::default(),
-            upload_pending:  HashSet::new(),
             gpu_upload_queue: VecDeque::new(),
             gpu_upload_pending: false,
             settings,
@@ -172,14 +169,10 @@ impl RivettApp {
 
     /// Queue an original image for GPU texture upload.
     fn queue_upload_for(&mut self, path: std::path::PathBuf, img: crate::image_loader::DecodedImage) {
-        if self.upload_pending.contains(&path) { return; }
         if self.gpu_upload_queue.iter().any(|(p, _, _, _)| p == &path) { return; }
-        
         let gpu_ready = self.gamma_renderer.as_ref()
             .map_or(false, |r| r.lock().unwrap().has_cached(&path));
         if gpu_ready { return; }
-
-        self.upload_pending.insert(path.clone());
         self.gpu_upload_queue.push_back((path, img.rgba.clone(), img.width, img.height));
     }
 
@@ -449,7 +442,6 @@ impl RivettApp {
         let Some(path) = self.current_path.clone() else { return };
         if cw { self.session.rotate_cw(path.clone()); } else { self.session.rotate_ccw(path.clone()); }
 
-        self.upload_pending.remove(&path);
         self.gpu_upload_queue.retain(|(p, _, _, _)| p != &path);
         if let Some(ref r) = self.gamma_renderer {
             r.lock().unwrap().invalidate(None, &path);
@@ -2098,12 +2090,15 @@ impl eframe::App for RivettApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         let old_cache_len = self.image_cache.len();
         self.image_cache.poll();
-        if self.image_cache.has_any_pending()
-            || !self.gpu_upload_queue.is_empty()
-            || self.gpu_upload_pending
-            || self.viewer.loading
-        {
-            ctx.request_repaint();
+
+        // If the viewer is waiting for an image that is no longer pending and never
+        // arrived (failed decode), clear the loading state so we don't spin forever.
+        if self.viewer.loading {
+            if let Some(ref path) = self.current_path.clone() {
+                if !self.image_cache.is_pending(path) && !self.image_cache.contains(path) {
+                    self.viewer.set_error("Failed to load image".to_string());
+                }
+            }
         }
 
         // If something was loaded into the cache, check if it's the current image
@@ -2121,6 +2116,16 @@ impl eframe::App for RivettApp {
                     self.queue_upload_for(p, img);
                 }
             }
+        }
+
+        // Request next frame only if there's actual in-flight work. Checked here —
+        // after poll() and the GPU queue update — so the state is current.
+        if self.image_cache.has_any_pending()
+            || !self.gpu_upload_queue.is_empty()
+            || self.gpu_upload_pending
+            || self.viewer.loading
+        {
+            ctx.request_repaint();
         }
 
         // Execute any pending drag-out here, at the very top of the update loop,
