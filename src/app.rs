@@ -778,11 +778,25 @@ impl RivettApp {
             .add_filter("PNG", &["png"]);
 
         if let Some(output_path) = dialog.save_file() {
-            self.save_as_state = Some(SaveAsState {
-                output_path,
-                preserve_metadata: self.settings.preserve_metadata,
-                focus_requested: false,
-            });
+            // Only show the confirmation modal if there is actual metadata that can be toggled.
+            // If the metadata list only contains headers or is empty, skip the modal.
+            let has_togglable_metadata = self.metadata.iter().any(|m| !m.is_header);
+            
+            if has_togglable_metadata {
+                self.save_as_state = Some(SaveAsState {
+                    output_path,
+                    preserve_metadata: self.settings.preserve_metadata,
+                    focus_requested: false,
+                });
+            } else {
+                // No metadata to preserve or configure -> save immediately
+                let state = SaveAsState {
+                    output_path,
+                    preserve_metadata: false,
+                    focus_requested: true,
+                };
+                self.perform_save_as(&state);
+            }
         }
     }
 
