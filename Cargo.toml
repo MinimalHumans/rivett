@@ -1,6 +1,6 @@
 [package]
 name        = "rivett"
-version = "0.4.5"
+version = "0.4.6"
 authors     = ["Jesse Kretschmer"]
 edition     = "2021"
 description = "Rust Image Vetting Tool — fast, keyboard-driven image viewer"

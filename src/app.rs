@@ -814,7 +814,7 @@ impl RivettApp {
             self.rotate_current(true, ctx);
         }
 
-        let ctrl = input.modifiers.ctrl;
+        let ctrl = input.modifiers.command;
         if input.key_pressed(Key::F) {
             self.viewer.toggle_fit(ctx.screen_rect().size());
         }
@@ -1016,11 +1016,11 @@ impl RivettApp {
                                 
                                 ui.label(""); ui.label(""); ui.end_row();
                                 section(ui, "SAVE & REFRESH");
-                                row(ui, "Ctrl+S",       "Save changes");
-                                row(ui, "Ctrl+Shift+S", "Save As");
-                                row(ui, "Ctrl+C",       "Copy image to clipboard");
-                                row(ui, "Ctrl+R",       "Soft refresh");
-                                row(ui, "Ctrl+Shift+R", "Hard refresh");
+                                row(ui, &shortcut(false, "S"), "Save changes");
+                                row(ui, &shortcut(true,  "S"), "Save As");
+                                row(ui, &shortcut(false, "C"), "Copy image to clipboard");
+                                row(ui, &shortcut(false, "R"), "Soft refresh");
+                                row(ui, &shortcut(true,  "R"), "Hard refresh");
                             });
                     });
                 });
@@ -1758,7 +1758,7 @@ impl RivettApp {
                 }
                 ui.close_menu();
             }
-            if ui.add_enabled(has_image, egui::Button::new("Copy Image").shortcut_text("Ctrl+C")).clicked() {
+            if ui.add_enabled(has_image, egui::Button::new("Copy Image").shortcut_text(shortcut(false, "C"))).clicked() {
                 self.copy_to_clipboard();
                 ui.close_menu();
             }
@@ -1766,7 +1766,7 @@ impl RivettApp {
                 self.reveal_in_file_manager();
                 ui.close_menu();
             }
-            if ui.add_enabled(has_image, egui::Button::new("Save as...").shortcut_text("Ctrl+Shift+S")).clicked() {
+            if ui.add_enabled(has_image, egui::Button::new("Save as...").shortcut_text(shortcut(true, "S"))).clicked() {
                 self.save_as(ctx);
                 ui.close_menu();
             }
@@ -1786,7 +1786,7 @@ impl RivettApp {
             } else {
                 "Fit to window"
             };
-            let fit_shortcut = if self.viewer.fit_to_window { "Ctrl+0" } else { "F" };
+            let fit_shortcut = if self.viewer.fit_to_window { shortcut(false, "0") } else { "F".to_string() };
             if ui.add(egui::Button::new(fit_label).shortcut_text(fit_shortcut)).clicked() {
                 if self.viewer.fit_to_window {
                     self.viewer.zoom_actual_size();
@@ -1798,7 +1798,7 @@ impl RivettApp {
 
             ui.separator();
 
-            if ui.add(egui::Button::new("Reset Session").shortcut_text("Ctrl+Shift+R")).clicked() {
+            if ui.add(egui::Button::new("Reset Session").shortcut_text(shortcut(true, "R"))).clicked() {
                 self.hard_refresh(ctx);
                 ui.close_menu();
             }
@@ -1881,6 +1881,19 @@ impl RivettApp {
 
 // ---------------------------------------------------------------------------
 // Rotation save helpers (free functions)
+// ---------------------------------------------------------------------------
+
+/// Returns a platform-appropriate shortcut string: ⌘X on macOS, Ctrl+X elsewhere.
+fn shortcut(shift: bool, key: &str) -> String {
+    if cfg!(target_os = "macos") {
+        if shift { format!("⌘⇧{key}") } else { format!("⌘{key}") }
+    } else if shift {
+        format!("Ctrl+Shift+{key}")
+    } else {
+        format!("Ctrl+{key}")
+    }
+}
+
 // ---------------------------------------------------------------------------
 
 /// Save rotation for JPEG by updating the EXIF Orientation tag in-place.
@@ -2216,7 +2229,7 @@ impl eframe::App for RivettApp {
 
             let response = ui.allocate_rect(canvas, egui::Sense::click_and_drag());
 
-            let ctrl_held = ctx.input(|i| i.modifiers.ctrl);
+            let ctrl_held = ctx.input(|i| i.modifiers.command);
 
             // Detect drag-out gesture; schedule for execution at the top of the next frame.
             let drag_out_trigger = response.drag_started_by(egui::PointerButton::Primary) && ctrl_held;
@@ -2371,7 +2384,7 @@ impl eframe::App for RivettApp {
                     egui::Id::new("modified_badge"),
                     egui::Sense::hover(),
                 );
-                response.on_hover_text("Unsaved changes (rotation, crops, metadata) — Ctrl+S to save");
+                response.on_hover_text(format!("Unsaved changes (rotation, crops, metadata) — {} to save", shortcut(false, "S")));
                 ui.painter().circle_filled(dot_pos, 6.0, egui::Color32::from_rgb(255, 180, 0));
             }
 
