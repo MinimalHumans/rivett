@@ -1,6 +1,6 @@
 [package]
 name        = "rivett"
-version = "0.4.4"
+version = "0.4.5"
 authors     = ["Jesse Kretschmer"]
 edition     = "2021"
 description = "Rust Image Vetting Tool — fast, keyboard-driven image viewer"
@@ -9,7 +9,7 @@ homepage    = "https://github.com/krets/rivett"
 repository  = "https://github.com/krets/rivett"
 
 [package.metadata.bundle]
-name = "rivett"
+name = "Rivett"
 identifier = "com.rivett.rivett"
 icon = ["resources/icon.png"]
 resources = ["resources/rivett.desktop", "resources/com.rivett.rivett.metainfo.xml"]
