@@ -691,7 +691,13 @@ impl RivettApp {
             } else {
                 "Folder"
             };
-            title = format!("{title} ({scope}: ★ {}+)", filter.value);
+            let label = match filter.op {
+                RatingFilterOp::Unrated        => "Unrated".to_string(),
+                RatingFilterOp::AtLeast        => format!("★ {}+", filter.value),
+                RatingFilterOp::AtMost         => format!("★ {}-", filter.value),
+                RatingFilterOp::Exactly        => format!("★ {}", filter.value),
+            };
+            title = format!("{title} ({scope}: {label})");
         }
 
         title
