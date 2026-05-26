@@ -1,6 +1,6 @@
 [package]
 name        = "rivett"
-version = "0.4.0"
+version = "0.4.1"
 authors     = ["Jesse Kretschmer"]
 edition     = "2021"
 description = "Rust Image Vetting Tool — fast, keyboard-driven image viewer"
@@ -16,7 +16,7 @@ resources = ["resources/rivett.desktop", "resources/com.rivett.rivett.metainfo.x
 authors = ["Jesse Kretschmer <jesse@krets.com>"]
 license = "MIT"
 copyright = "Copyright © 2026 Jesse Kretschmer (Minimal Humans)"
-category = "Graphics"
+category = "Graphics and Design"
 short_description = "Fast, keyboard-driven image vetting tool."
 long_description = """
 Rivett is a high-performance image vetting tool designed for photographers and creatives who need to quickly sort through large collections of images. It features a keyboard-centric workflow, fast image loading, and a clean interface.
