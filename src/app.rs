@@ -963,8 +963,8 @@ impl RivettApp {
                                 row(ui, "↑  /  PgUp",   "Jump back 10");
                                 row(ui, "Home",          "First image");
                                 row(ui, "End",           "Last image");
-                                row(ui, "Alt+↑",         "Open parent directory");
-                                row(ui, "Shift + nav",   "Preserve zoom");
+                                row(ui, &shortcut_label(Modifiers::ALT, "↑"),         "Open parent directory");
+                                row(ui, &shortcut_label(Modifiers::SHIFT, "nav"),   "Preserve zoom");
 
                                 ui.label(""); ui.label(""); ui.end_row();
                                 section(ui, "VIEW");
@@ -979,7 +979,7 @@ impl RivettApp {
 
                                 ui.label(""); ui.label(""); ui.end_row();
                                 section(ui, "FILE MANAGEMENT");
-                                row(ui, "H / Alt+H",   "Hide / ignore image (Session only)");
+                                row(ui, &format!("H / {}", shortcut_label(Modifiers::ALT, "H")),   "Hide / ignore image (Session only)");
                                 row(ui, "Del × 2",     "Move to trash");
                                 row(ui, "Escape",       "Cancel delete");
 
@@ -995,7 +995,7 @@ impl RivettApp {
                             .show(ui, |ui| {
                                 section(ui, "MOUSE CANVAS");
                                 row(ui, "Left-drag",        "Pan image");
-                                row(ui, "Ctrl + Drag",      "Drag out to OS");
+                                row(ui, &shortcut_label(Modifiers::CTRL, "Drag"),      "Drag out to OS");
                                 row(ui, "Scroll / Pinch",   "Zoom in / out");
                                 row(ui, "Double-click",     "Open file picker");
                                 row(ui, "Right-click",      "Context menu");
@@ -1006,7 +1006,7 @@ impl RivettApp {
                                 row(ui, "Drag handles",     "Adjust black/white pt");
                                 row(ui, "Drag center",      "Shift both points");
                                 row(ui, "Dbl-click handle", "Reset point");
-                                row(ui, "Shift + Drag",     "Coarse exposure adj");
+                                row(ui, &shortcut_label(Modifiers::SHIFT, "Drag"),     "Coarse exposure adj");
                                 row(ui, "Dbl-click slider", "Reset exp/gamma");
 
                                 ui.label(""); ui.label(""); ui.end_row();
@@ -1016,11 +1016,11 @@ impl RivettApp {
                                 
                                 ui.label(""); ui.label(""); ui.end_row();
                                 section(ui, "SAVE & REFRESH");
-                                row(ui, &shortcut(false, "S"), "Save changes");
-                                row(ui, &shortcut(true,  "S"), "Save As");
-                                row(ui, &shortcut(false, "C"), "Copy image to clipboard");
-                                row(ui, &shortcut(false, "R"), "Soft refresh");
-                                row(ui, &shortcut(true,  "R"), "Hard refresh");
+                                row(ui, &shortcut_label(Modifiers::CTRL,          "S"), "Save changes");
+                                row(ui, &shortcut_label(Modifiers::CTRL.shift(),  "S"), "Save As");
+                                row(ui, &shortcut_label(Modifiers::CTRL,          "C"), "Copy image to clipboard");
+                                row(ui, &shortcut_label(Modifiers::CTRL,          "R"), "Soft refresh");
+                                row(ui, &shortcut_label(Modifiers::CTRL.shift(),  "R"), "Hard refresh");
                             });
                     });
                 });
@@ -1758,7 +1758,7 @@ impl RivettApp {
                 }
                 ui.close_menu();
             }
-            if ui.add_enabled(has_image, egui::Button::new("Copy Image").shortcut_text(shortcut(false, "C"))).clicked() {
+            if ui.add_enabled(has_image, egui::Button::new("Copy Image").shortcut_text(shortcut_label(Modifiers::CTRL, "C"))).clicked() {
                 self.copy_to_clipboard();
                 ui.close_menu();
             }
@@ -1766,7 +1766,7 @@ impl RivettApp {
                 self.reveal_in_file_manager();
                 ui.close_menu();
             }
-            if ui.add_enabled(has_image, egui::Button::new("Save as...").shortcut_text(shortcut(true, "S"))).clicked() {
+            if ui.add_enabled(has_image, egui::Button::new("Save as...").shortcut_text(shortcut_label(Modifiers::CTRL.shift(), "S"))).clicked() {
                 self.save_as(ctx);
                 ui.close_menu();
             }
@@ -1786,7 +1786,7 @@ impl RivettApp {
             } else {
                 "Fit to window"
             };
-            let fit_shortcut = if self.viewer.fit_to_window { shortcut(false, "0") } else { "F".to_string() };
+            let fit_shortcut = if self.viewer.fit_to_window { shortcut_label(Modifiers::CTRL, "0") } else { "F".to_string() };
             if ui.add(egui::Button::new(fit_label).shortcut_text(fit_shortcut)).clicked() {
                 if self.viewer.fit_to_window {
                     self.viewer.zoom_actual_size();
@@ -1798,7 +1798,7 @@ impl RivettApp {
 
             ui.separator();
 
-            if ui.add(egui::Button::new("Reset Session").shortcut_text(shortcut(true, "R"))).clicked() {
+            if ui.add(egui::Button::new("Reset Session").shortcut_text(shortcut_label(Modifiers::CTRL.shift(), "R"))).clicked() {
                 self.hard_refresh(ctx);
                 ui.close_menu();
             }
@@ -1883,14 +1883,44 @@ impl RivettApp {
 // Rotation save helpers (free functions)
 // ---------------------------------------------------------------------------
 
-/// Returns a platform-appropriate shortcut string: ⌘X on macOS, Ctrl+X elsewhere.
-fn shortcut(shift: bool, key: &str) -> String {
+// ---------------------------------------------------------------------------
+// Modifiers & Shortcut Helpers
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Default)]
+struct Modifiers {
+    ctrl:  bool,
+    shift: bool,
+    alt:   bool,
+}
+
+impl Modifiers {
+    const NONE:  Self = Self { ctrl: false, shift: false, alt: false };
+    const CTRL:  Self = Self { ctrl: true,  ..Self::NONE };
+    const SHIFT: Self = Self { shift: true, ..Self::NONE };
+    const ALT:   Self = Self { alt: true,   ..Self::NONE };
+
+    fn ctrl(mut self) -> Self { self.ctrl = true; self }
+    fn shift(mut self) -> Self { self.shift = true; self }
+    fn alt(mut self) -> Self { self.alt = true; self }
+}
+
+/// Returns a platform-appropriate label for a key combination.
+fn shortcut_label(mods: Modifiers, key: &str) -> String {
     if cfg!(target_os = "macos") {
-        if shift { format!("⌘⇧{key}") } else { format!("⌘{key}") }
-    } else if shift {
-        format!("Ctrl+Shift+{key}")
+        let mut s = String::new();
+        if mods.ctrl  { s.push('⌘'); }
+        if mods.alt   { s.push('⌥'); }
+        if mods.shift { s.push('⇧'); }
+        s.push_str(key);
+        s
     } else {
-        format!("Ctrl+{key}")
+        let mut parts = vec![];
+        if mods.ctrl  { parts.push("Ctrl"); }
+        if mods.alt   { parts.push("Alt"); }
+        if mods.shift { parts.push("Shift"); }
+        parts.push(key);
+        parts.join("+")
     }
 }
 
@@ -2396,7 +2426,7 @@ impl eframe::App for RivettApp {
                     egui::Id::new("modified_badge"),
                     egui::Sense::hover(),
                 );
-                response.on_hover_text(format!("Unsaved changes (rotation, crops, metadata) — {} to save", shortcut(false, "S")));
+                response.on_hover_text(format!("Unsaved changes (rotation, crops, metadata) — {} to save", shortcut_label(Modifiers::CTRL, "S")));
                 ui.painter().circle_filled(dot_pos, 6.0, egui::Color32::from_rgb(255, 180, 0));
             }
 

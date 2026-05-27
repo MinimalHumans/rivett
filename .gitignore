@@ -1,5 +1,7 @@
 /target
 /Cargo.lock
+GEMINI.md
+
 
 # IDEs
 .vscode/
