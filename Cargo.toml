@@ -10,9 +10,9 @@ repository  = "https://github.com/krets/rivett"
 
 [package.metadata.bundle]
 name = "Rivett"
-identifier = "com.rivett.rivett"
+identifier = "com.minimalhumans.rivett"
 icon = ["resources/icon.png"]
-resources = ["resources/rivett.desktop", "resources/com.rivett.rivett.metainfo.xml"]
+resources = ["resources/rivett.desktop", "resources/com.minimalhumans.rivett.metainfo.xml"]
 authors = ["Jesse Kretschmer <jesse@krets.com>"]
 license = "MIT"
 copyright = "Copyright © 2026 Jesse Kretschmer (Minimal Humans)"
@@ -36,10 +36,21 @@ maintainer = "Jesse Kretschmer <jesse@krets.com>"
 copyright = "Copyright © 2026 Jesse Kretschmer (Minimal Humans)"
 section = "graphics"
 priority = "optional"
+extended-description = """\
+Rivett is a fast, keyboard-driven image viewer for sorting and vetting large \
+collections. Built for photographers and digital artists who need to move \
+quickly through images without the interface getting in the way.
+
+Features hardware-accelerated gamma, exposure, and black/white point controls \
+with histogram remap and clipping indicators for HDR images. Supports standard \
+web formats (PNG, JPEG, WebP, BMP, GIF, TIFF), OpenEXR, SVG, and professional \
+camera RAW formats via LibRaw. AI metadata from ComfyUI, Stable Diffusion, and \
+MidJourney is surfaced at the top of the metadata panel.\
+"""
 assets = [
   ["target/release/rivett", "usr/bin/rivett", "755"],
   ["resources/rivett.desktop", "usr/share/applications/rivett.desktop", "644"],
-  ["resources/com.rivett.rivett.metainfo.xml", "usr/share/metainfo/com.rivett.rivett.metainfo.xml", "644"],
+  ["resources/com.minimalhumans.rivett.metainfo.xml", "usr/share/metainfo/com.minimalhumans.rivett.metainfo.xml", "644"],
   ["resources/icon.png", "usr/share/icons/hicolor/512x512/apps/rivett.png", "644"],
 ]
 

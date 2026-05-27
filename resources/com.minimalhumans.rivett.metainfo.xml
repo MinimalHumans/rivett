@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>com.rivett.rivett</id>
+  <id>com.minimalhumans.rivett</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
   <name>Rivett</name>
@@ -19,6 +19,9 @@
       <image>https://raw.githubusercontent.com/krets/rivett/main/resources/logo.svg</image>
     </screenshot>
   </screenshots>
+  <developer id="com.minimalhumans">
+    <name>Jesse Kretschmer</name>
+  </developer>
   <url type="homepage">https://github.com/krets/rivett</url>
   <provides>
     <binary>rivett</binary>
