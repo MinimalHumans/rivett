@@ -171,7 +171,7 @@ impl RivettApp {
     fn queue_upload_for(&mut self, path: std::path::PathBuf, img: crate::image_loader::DecodedImage) {
         if self.gpu_upload_queue.iter().any(|(p, _, _, _)| p == &path) { return; }
         let gpu_ready = self.gamma_renderer.as_ref()
-            .map_or(false, |r| r.lock().unwrap().has_cached(&path));
+            .map_or(false, |r| r.lock().unwrap_or_else(|p| p.into_inner()).has_cached(&path));
         if gpu_ready { return; }
         self.gpu_upload_queue.push_back((path, img.rgba.clone(), img.width, img.height));
     }
@@ -238,11 +238,11 @@ impl RivettApp {
 
             // Fast path: GPU texture already pre-uploaded — instant swap, no stall.
             let gpu_ready = self.gamma_renderer.as_ref()
-                .map_or(false, |r| r.lock().unwrap().has_cached(&path));
+                .map_or(false, |r| r.lock().unwrap_or_else(|p| p.into_inner()).has_cached(&path));
 
             if gpu_ready {
                 if let Some(ref r) = self.gamma_renderer {
-                    r.lock().unwrap().set_active(path.clone());
+                    r.lock().unwrap_or_else(|p| p.into_inner()).set_active(path.clone());
                 }
                 self.viewer.load_image_meta(ctx, &img, rotation, adjustments, preserve_zoom);
                 self.gpu_upload_pending = false;
@@ -460,7 +460,7 @@ impl RivettApp {
 
         self.gpu_upload_queue.retain(|(p, _, _, _)| p != &path);
         if let Some(ref r) = self.gamma_renderer {
-            r.lock().unwrap().invalidate(None, &path);
+            r.lock().unwrap_or_else(|p| p.into_inner()).invalidate(None, &path);
         }
 
         self.load_current(ctx, true);
@@ -2289,17 +2289,27 @@ impl eframe::App for RivettApp {
                     s
                 };
 
-                let renderer = self.gamma_renderer.get_or_insert_with(|| {
-                    let gl = cc_gl_from_ctx(ctx).expect("Glow context not found");
-                    Arc::new(Mutex::new(GammaRenderer::new(&gl)))
-                }).clone();
+                if self.gamma_renderer.is_none() {
+                    match cc_gl_from_ctx(ctx) {
+                        Some(gl) => {
+                            self.gamma_renderer = Some(Arc::new(Mutex::new(GammaRenderer::new(&gl))));
+                        }
+                        None => {
+                            log::warn!("GL context not available; deferring GPU upload");
+                            self.gpu_upload_queue.push_front((path, rgba, w, h));
+                            ctx.request_repaint();
+                            return;
+                        }
+                    }
+                }
+                let renderer = self.gamma_renderer.as_ref().unwrap().clone();
 
                 let path_clone = path.clone();
                 let keep_closure = keep.clone();
                 ui.painter().add(egui::PaintCallback {
                     rect: canvas,
                     callback: Arc::new(egui_glow::CallbackFn::new(move |_info, painter| {
-                        let mut r = renderer.lock().unwrap();
+                        let mut r = renderer.lock().unwrap_or_else(|p| p.into_inner());
                         r.cache_texture(painter.gl(), path_clone.clone(), w, h, &rgba);
                         r.evict_stale(painter.gl(), &keep_closure);
                     })),
@@ -2307,7 +2317,7 @@ impl eframe::App for RivettApp {
 
                 if is_current {
                     if let Some(ref r) = self.gamma_renderer {
-                        r.lock().unwrap().set_active(path.clone());
+                        r.lock().unwrap_or_else(|p| p.into_inner()).set_active(path.clone());
                     }
                     self.gpu_upload_pending = false;
                 }
@@ -2327,11 +2337,13 @@ impl eframe::App for RivettApp {
                         remap_min: self.viewer.remap_min,
                         remap_max: self.viewer.remap_max,
                     };
-                    let rotation = self.session.rotation_for(self.current_path.as_ref().unwrap());
+                    let rotation = self.current_path.as_ref()
+                        .map(|p| self.session.rotation_for(p))
+                        .unwrap_or_default();
                     ui.painter().add(egui::PaintCallback {
                         rect: canvas, // Cover the entire canvas to allow for zoom/pan clipping
                         callback: Arc::new(egui_glow::CallbackFn::new(move |_info, painter| {
-                            let renderer = renderer.lock().unwrap();
+                            let renderer = renderer.lock().unwrap_or_else(|p| p.into_inner());
                             renderer.paint(painter.gl(), rect, canvas, adj, rotation);
                         })),
                     });

@@ -9,29 +9,35 @@ use std::io::Write;
 
 fn init_logging() {
     let mut builder = env_logger::Builder::from_default_env();
-    
+
     // Also log to a file on Windows to help debugging GUI apps without a console
     if cfg!(target_os = "windows") {
-        if let Ok(file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("rivett.log") 
-        {
-            let file = std::sync::Arc::new(std::sync::Mutex::new(file));
-            builder.format(move |buf, record| {
-                let msg = format!("[{}] {} - {}\n", record.level(), record.target(), record.args());
-                let _ = buf.write_all(msg.as_bytes());
-                if let Ok(mut f) = file.lock() {
-                    let _ = f.write_all(msg.as_bytes());
-                }
-                Ok(())
-            });
+        if let Some(mut log_path) = AppSettings::config_dir() {
+            // Ensure the directory exists
+            let _ = std::fs::create_dir_all(&log_path);
+
+            log_path.push("rivett.log");
+
+            if let Ok(file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_path)
+            {
+                let file = std::sync::Arc::new(std::sync::Mutex::new(file));
+                builder.format(move |buf, record| {
+                    let msg = format!("[{}] {} - {}\n", record.level(), record.target(), record.args());
+                    let _ = buf.write_all(msg.as_bytes());
+                    if let Ok(mut f) = file.lock() {
+                        let _ = f.write_all(msg.as_bytes());
+                    }
+                    Ok(())
+                });
+            }
         }
     }
 
     builder.init();
 }
-
 fn parse_args() -> Option<PathBuf> {
     let args: Vec<String> = std::env::args().collect();
     args.get(1).map(PathBuf::from)
