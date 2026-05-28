@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Theme xmlns="http://wixtoolset.org/schemas/thmutil/2010">
+    <Window Width="500" Height="360" HexColor="#242424" FontId="0">Rivett Setup</Window>
+    <Font Id="0" Height="-12" Weight="400" Foreground="#f1a021" FaceName="Segoe UI" />
+    <Font Id="1" Height="-24" Weight="400" Foreground="#f1a021" FaceName="Segoe UI" />
+    <Font Id="2" Height="-12" Weight="400" Foreground="#ffffff" FaceName="Segoe UI" />
+
+    <Image Id="Logo" X="20" Y="20" Width="64" Height="64" ImageFile="Product.ico" />
+    
+    <Text Id="Caption" X="100" Y="25" Width="-20" Height="30" FontId="1" DisablePrefix="yes">Rivett</Text>
+    <Text Id="Description" X="100" Y="60" Width="-20" Height="60" FontId="2" DisablePrefix="yes">High-performance image vetting tool for professionals.</Text>
+
+    <Page Id="Install">
+        <Text X="20" Y="140" Width="-20" Height="30" FontId="2">Click Install to begin. Rivett will be installed with default file associations and a context menu entry.</Text>
+        <Button Id="InstallButton" X="160" Y="280" Width="80" Height="30" TabStop="yes" FontId="0">Install</Button>
+        <Button Id="CloseButton" X="260" Y="280" Width="80" Height="30" TabStop="yes" FontId="0">Close</Button>
+    </Page>
+
+    <Page Id="Progress">
+        <Text X="20" Y="140" Width="-20" Height="30" FontId="2">Installing Rivett...</Text>
+        <ProgressBar Id="ProgressBar" X="20" Y="180" Width="-20" Height="20" />
+        <Button Id="CancelButton" X="400" Y="280" Width="80" Height="30" TabStop="yes" FontId="0">Cancel</Button>
+    </Page>
+
+    <Page Id="Success">
+        <Text X="20" Y="140" Width="-20" Height="30" FontId="2">Rivett has been successfully installed!</Text>
+        <Button Id="LaunchButton" X="160" Y="280" Width="80" Height="30" TabStop="yes" FontId="0">Launch</Button>
+        <Button Id="CloseButton" X="260" Y="280" Width="80" Height="30" TabStop="yes" FontId="0">Close</Button>
+    </Page>
+
+    <Page Id="Failure">
+        <Text X="20" Y="140" Width="-20" Height="30" FontId="2">Setup failed. Please check the logs or try again.</Text>
+        <Button Id="CloseButton" X="400" Y="280" Width="80" Height="30" TabStop="yes" FontId="0">Close</Button>
+    </Page>
+</Theme>

@@ -12,6 +12,7 @@ Thumbs.db
 .DS_Store
 
 # Temporary files
-*.png~
+*.*~
+*.kra-autosave.kra
 *.bak
 .claude

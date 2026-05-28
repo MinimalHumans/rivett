@@ -58,10 +58,6 @@
             <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
                 <Directory Id='APPLICATIONFOLDER' Name='Rivett'>
                     
-                    <Component Id='License' Guid='*'>
-                        <File Id='LicenseFile' DiskId='1' Source='wix\License.rtf' KeyPath='yes'/>
-                    </Component>
-                    
                     <Directory Id='Bin' Name='bin'>
                         <Component Id='Path' Guid='57C98A4B-B1F6-4F0F-B7F8-A18CA06FACA9' KeyPath='yes'>
                             <Environment Id='PATH' Name='PATH' Value='[Bin]' Permanent='no' Part='last' Action='set' System='yes'/>
@@ -145,13 +141,43 @@
         <Feature
             Id='Binaries'
             Title='Rivett Application'
-            Description='The core Rivett executable and license.'
+            Description='The core high-performance image viewer and essential components.'
             Level='1'
             ConfigurableDirectory='APPLICATIONFOLDER'
             AllowAdvertise='no'
             Absent='disallow'>
-            <ComponentRef Id='License'/>
             <ComponentRef Id='binary0'/>
+        </Feature>
+
+        <Feature
+            Id='FileAssociations'
+            Title='File Associations'
+            Description='Associate these file formats to open with Rivett by default.'
+            Level='1'>
+            
+            <!-- Standard Formats Group -->
+            <Feature Id='StandardFormats' Title='Standard Formats' Description='PNG, JPG, WebP, BMP, GIF, TIFF' Level='1'>
+                <Feature Id='Feat_Png' Title='PNG (.png)' Level='1'><ComponentRef Id='ProgId_Png'/><ComponentRef Id='AssocPng'/></Feature>
+                <Feature Id='Feat_Jpg' Title='JPEG (.jpg, .jpeg)' Level='1'><ComponentRef Id='ProgId_Jpg'/><ComponentRef Id='AssocJpg'/></Feature>
+                <Feature Id='Feat_Webp' Title='WebP (.webp)' Level='1'><ComponentRef Id='ProgId_Webp'/><ComponentRef Id='AssocWebp'/></Feature>
+                <Feature Id='Feat_Bmp' Title='BMP (.bmp)' Level='1'><ComponentRef Id='ProgId_Bmp'/><ComponentRef Id='AssocBmp'/></Feature>
+                <Feature Id='Feat_Gif' Title='GIF (.gif)' Level='1'><ComponentRef Id='ProgId_Gif'/><ComponentRef Id='AssocGif'/></Feature>
+                <Feature Id='Feat_Tiff' Title='TIFF (.tif, .tiff)' Level='1'><ComponentRef Id='ProgId_Tiff'/><ComponentRef Id='AssocTiff'/></Feature>
+            </Feature>
+
+            <!-- Pro Formats Group -->
+            <Feature Id='ProFormats' Title='Professional &amp; RAW Formats' Description='EXR, SVG, and Camera RAW (CR2, NEF, etc.)' Level='1'>
+                <Feature Id='Feat_Exr' Title='OpenEXR (.exr)' Level='1'><ComponentRef Id='ProgId_Exr'/><ComponentRef Id='AssocExr'/></Feature>
+                <Feature Id='Feat_Svg' Title='SVG (.svg)' Level='1'><ComponentRef Id='ProgId_Svg'/><ComponentRef Id='AssocSvg'/></Feature>
+                <Feature Id='Feat_Raw' Title='Camera RAW (All)' Description='Support for CR2, CR3, ARW, NEF, RAF, DNG' Level='1'>
+                    <ComponentRef Id='ProgId_Cr2'/><ComponentRef Id='AssocCr2'/>
+                    <ComponentRef Id='ProgId_Cr3'/><ComponentRef Id='AssocCr3'/>
+                    <ComponentRef Id='ProgId_Arw'/><ComponentRef Id='AssocArw'/>
+                    <ComponentRef Id='ProgId_Nef'/><ComponentRef Id='AssocNef'/>
+                    <ComponentRef Id='ProgId_Raf'/><ComponentRef Id='AssocRaf'/>
+                    <ComponentRef Id='ProgId_Dng'/><ComponentRef Id='AssocDng'/>
+                </Feature>
+            </Feature>
         </Feature>
 
         <Feature
@@ -162,46 +188,6 @@
             <ComponentRef Id='RegistryShell'/>
         </Feature>
 
-        <Feature
-            Id='FileAssociations'
-            Title='File Associations'
-            Description='Register Rivett in the "Open With" menu. Expand to choose individual formats.'
-            Level='1'>
-            <Feature Id='AssocPngFeature' Title='PNG (.png)' Level='1'>
-                <ComponentRef Id='ProgId_Png'/>
-                <ComponentRef Id='AssocPng'/>
-            </Feature>
-            <Feature Id='AssocJpgFeature' Title='JPEG (.jpg, .jpeg)' Level='1'>
-                <ComponentRef Id='ProgId_Jpg'/>
-                <ComponentRef Id='AssocJpg'/>
-            </Feature>
-            <Feature Id='AssocWebpFeature' Title='WebP (.webp)' Level='1'>
-                <ComponentRef Id='ProgId_Webp'/>
-                <ComponentRef Id='AssocWebp'/>
-            </Feature>
-            <Feature Id='AssocStandardFeature' Title='Standard (BMP, GIF, TIFF)' Level='1'>
-                <ComponentRef Id='ProgId_Bmp'/><ComponentRef Id='AssocBmp'/>
-                <ComponentRef Id='ProgId_Gif'/><ComponentRef Id='AssocGif'/>
-                <ComponentRef Id='ProgId_Tiff'/><ComponentRef Id='AssocTiff'/>
-            </Feature>
-            <Feature Id='AssocExrFeature' Title='OpenEXR (.exr)' Level='1'>
-                <ComponentRef Id='ProgId_Exr'/>
-                <ComponentRef Id='AssocExr'/>
-            </Feature>
-            <Feature Id='AssocSvgFeature' Title='SVG (.svg)' Level='1'>
-                <ComponentRef Id='ProgId_Svg'/>
-                <ComponentRef Id='AssocSvg'/>
-            </Feature>
-            <Feature Id='AssocRawFeature' Title='Camera RAW' Level='1'>
-                <ComponentRef Id='ProgId_Cr2'/><ComponentRef Id='AssocCr2'/>
-                <ComponentRef Id='ProgId_Cr3'/><ComponentRef Id='AssocCr3'/>
-                <ComponentRef Id='ProgId_Arw'/><ComponentRef Id='AssocArw'/>
-                <ComponentRef Id='ProgId_Nef'/><ComponentRef Id='AssocNef'/>
-                <ComponentRef Id='ProgId_Raf'/><ComponentRef Id='AssocRaf'/>
-                <ComponentRef Id='ProgId_Dng'/><ComponentRef Id='AssocDng'/>
-            </Feature>
-        </Feature>
-
         <Feature Id='Environment' Title='Add to PATH' Description='Add Rivett to your system PATH.' Level='2' Absent='allow'>
             <ComponentRef Id='Path'/>
         </Feature>
@@ -210,12 +196,12 @@
 
         <UI>
             <UIRef Id='WixUI_FeatureTree'/>
-            <!-- Navigation to skip LicenseAgreementDlg -->
-            <Publish Dialog='WelcomeDlg' Control='Next' Event='NewDialog' Value='CustomizeDlg' Order='2'>1</Publish>
-            <Publish Dialog='CustomizeDlg' Control='Back' Event='NewDialog' Value='WelcomeDlg' Order='2'>1</Publish>
+            
+            <!-- Force navigation to skip LicenseAgreementDlg (Order="99" ensures we win over the library defaults) -->
+            <Publish Dialog='WelcomeDlg' Control='Next' Event='NewDialog' Value='CustomizeDlg' Order='99'>1</Publish>
+            <Publish Dialog='CustomizeDlg' Control='Back' Event='NewDialog' Value='WelcomeDlg' Order='99'>1</Publish>
         </UI>
 
-        <WixVariable Id='WixUILicenseRtf' Value='wix\License.rtf'/>
         <WixVariable Id='WixUIBannerBmp' Value='wix\Banner.bmp'/>
         <WixVariable Id='WixUIDialogBmp' Value='wix\Dialog.bmp'/>
 
