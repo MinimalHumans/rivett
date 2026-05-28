@@ -27,7 +27,7 @@
         Id='*'
         Name='Rivett $(var.Version)'
         UpgradeCode='4FC25C8F-175E-4005-8AD9-E09C31EB26C3'
-        Manufacturer='Rivett Developers'
+        Manufacturer='Minimal Humans'
         Language='1033'
         Codepage='1252'
         Version='$(var.Version)'>
@@ -35,7 +35,7 @@
         <Package Id='*'
             Keywords='Installer'
             Description='Rivett — High-performance image vetting tool'
-            Manufacturer='Rivett Developers'
+            Manufacturer='Minimal Humans'
             InstallerVersion='450'
             Languages='1033'
             Compressed='yes'
