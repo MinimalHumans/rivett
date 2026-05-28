@@ -523,6 +523,14 @@ impl RivettApp {
     fn soft_refresh(&mut self, ctx: &Context) {
         let sort = self.session_sort_order();
         let db_ref = self.db.as_ref();
+
+        if let Some(path) = self.current_path.clone() {
+            self.image_cache.remove(&path);
+            if let Some(ref r) = self.gamma_renderer {
+                r.lock().unwrap_or_else(|p| p.into_inner()).invalidate(None, &path);
+            }
+        }
+
         if let Some(ref mut listing) = self.listing {
             let old_index = listing.current_index;
             let had_current = listing.current().cloned();
@@ -672,6 +680,9 @@ impl RivettApp {
                     self.session.toggle_metadata_strip(path.clone());
                 }
                 self.image_cache.remove(&path);
+                if let Some(ref r) = self.gamma_renderer {
+                    r.lock().unwrap_or_else(|p| p.into_inner()).invalidate(None, &path);
+                }
                 self.load_current(ctx, true);
                 self.toast("Saved", ToastKind::General);
             }
@@ -2087,24 +2098,35 @@ fn patch_exif_orientation(bytes: &mut Vec<u8>, new_value: u16) -> bool {
         else             { u32::from_be_bytes([b[off], b[off+1], b[off+2], b[off+3]]) }
     };
 
-    let ifd_offset = read_u32(bytes, 4) as usize;
-    if ifd_offset + 2 > bytes.len() { return false; }
-    let entry_count = read_u16(bytes, ifd_offset) as usize;
+    let mut current_ifd_offset = read_u32(bytes, 4) as usize;
+    let mut patched = false;
+    let mut safety_counter = 0;
 
-    for i in 0..entry_count {
-        let entry_off = ifd_offset + 2 + i * 12;
-        if entry_off + 12 > bytes.len() { break; }
-        let tag = read_u16(bytes, entry_off);
-        if tag == 0x0112 {
-            let val_off = entry_off + 8;
-            if val_off + 2 > bytes.len() { return false; }
-            let encoded = if little_endian { new_value.to_le_bytes() } else { new_value.to_be_bytes() };
-            bytes[val_off]     = encoded[0];
-            bytes[val_off + 1] = encoded[1];
-            return true;
+    while current_ifd_offset != 0 && safety_counter < 10 {
+        if current_ifd_offset + 2 > bytes.len() { break; }
+        let entry_count = read_u16(bytes, current_ifd_offset) as usize;
+
+        for i in 0..entry_count {
+            let entry_off = current_ifd_offset + 2 + i * 12;
+            if entry_off + 12 > bytes.len() { break; }
+            let tag = read_u16(bytes, entry_off);
+            if tag == 0x0112 {
+                let val_off = entry_off + 8;
+                if val_off + 2 <= bytes.len() {
+                    let encoded = if little_endian { new_value.to_le_bytes() } else { new_value.to_be_bytes() };
+                    bytes[val_off]     = encoded[0];
+                    bytes[val_off + 1] = encoded[1];
+                    patched = true;
+                }
+            }
         }
+
+        let next_ifd_offset_pos = current_ifd_offset + 2 + entry_count * 12;
+        if next_ifd_offset_pos + 4 > bytes.len() { break; }
+        current_ifd_offset = read_u32(bytes, next_ifd_offset_pos) as usize;
+        safety_counter += 1;
     }
-    false
+    patched
 }
 
 /// Build minimal pure TIFF data containing only the Orientation tag.
