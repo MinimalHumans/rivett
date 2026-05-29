@@ -93,12 +93,13 @@ jobs:
         run: cargo bundle --release --format osx
       - name: Sign and package .app bundle
         run: |
+          VERSION=${GITHUB_REF_NAME#v}
           codesign --force --deep --sign - target/release/bundle/osx/Rivett.app
-          ditto -c -k --keepParent target/release/bundle/osx/Rivett.app rivett-macos.zip
+          ditto -c -k --keepParent target/release/bundle/osx/Rivett.app rivett-${VERSION}-macos.zip
       - name: Upload macOS Bundle
         uses: softprops/action-gh-release@v2
         with:
-          files: rivett-macos.zip
+          files: rivett-*-macos.zip
           draft: false
           prerelease: false
           fail_on_unmatched_files: true
