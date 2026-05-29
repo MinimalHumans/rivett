@@ -1874,8 +1874,8 @@ impl RivettApp {
                     .small()
                     .color(egui::Color32::from_gray(120)));
                 ui.hyperlink_to(
-                    egui::RichText::new("github.com/krets/rivett").small(),
-                    "https://github.com/krets/rivett"
+                    egui::RichText::new("github.com/MinimalHumans/rivett").small(),
+                    "https://github.com/MinimalHumans/rivett"
                 );
             });
         });

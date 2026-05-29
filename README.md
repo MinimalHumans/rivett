@@ -9,15 +9,6 @@ Rivett is a fast, keyboard-driven image viewer for sorting and vetting large col
 - **Format Support:** Standard web formats, OpenEXR, SVG, and professional Camera RAW formats (.CR3, .ARW, .NEF, .RAF, .DNG, and more) via LibRaw.
 - **AI Metadata:** Prompts from ComfyUI, Stable Diffusion (A1111), and MidJourney are surfaced at the top of the metadata panel rather than buried in raw JSON.
 - **Minimalist UI:** Optional info panel for metadata, EXIF, ratings, and histogram. All controls are documented in the in-app help menu (`?`).
-- **Windows Integration:** MSI installer with a native "Open with Rivett" context menu and file associations.
-
-## Installation
-
-Installers are available on the [Releases](https://github.com/krets/rivett/releases) page.
-
-- **Windows:** `.msi` installer
-- **Linux:** `.AppImage` or `.deb`
-- **macOS:** `.app` bundle
 
 ## Controls
 
