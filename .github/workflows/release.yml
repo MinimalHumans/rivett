@@ -28,16 +28,17 @@ jobs:
         
       - name: Package Portable ZIP
         run: |
+          $VERSION = $env:GITHUB_REF_NAME -replace '^v', ''
           mkdir dist
           cp target/release/rivett.exe dist/
           cp README.md dist/
-          Compress-Archive -Path dist/* -DestinationPath rivett-windows-portable.zip
-          
+          Compress-Archive -Path dist/* -DestinationPath "rivett-${VERSION}-windows-portable.zip"
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            rivett-windows-portable.zip
+            rivett-*-windows-portable.zip
             target/wix/*.msi
           draft: false
           prerelease: false
