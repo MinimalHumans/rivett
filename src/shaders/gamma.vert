@@ -1,5 +1,4 @@
-#version 300 es
-precision mediump float;
+#version 330 core
 
 uniform vec4 u_image_rect;  // [min_x, min_y, max_x, max_y] in logical pixels
 uniform vec4 u_canvas_rect; // [min_x, min_y, max_x, max_y] in logical pixels
