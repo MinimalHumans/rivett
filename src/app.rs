@@ -19,14 +19,6 @@ use crate::viewer::ViewerState;
 use crate::renderer::GammaRenderer;
 use crate::utilities::UtilitiesState;
 use std::sync::{Arc, Mutex};
-use egui_glow::glow;
-
-/// A wrapper to allow Arc<glow::Context> to be Send + Sync.
-/// In eframe/egui on desktop, the GL context is only used on the main thread.
-#[derive(Clone)]
-struct SendSyncGl(Arc<glow::Context>);
-unsafe impl Send for SendSyncGl {}
-unsafe impl Sync for SendSyncGl {}
 
 // ---------------------------------------------------------------------------
 // RivettApp
@@ -95,9 +87,9 @@ impl RivettApp {
             e
         }).ok();
 
-        if let Some(gl) = &cc.gl {
-            cc.egui_ctx.memory_mut(|mem| mem.data.insert_temp(egui::Id::new("gl_context"), SendSyncGl(gl.clone())));
-        }
+        let gamma_renderer = cc.gl.as_ref().map(|gl| {
+            Arc::new(Mutex::new(GammaRenderer::new(gl)))
+        });
 
         let mut app = Self {
             db,
@@ -105,7 +97,7 @@ impl RivettApp {
             image_cache:     ImageCache::new(32),
             listing:         None,
             session:         SessionState::new(settings.default_sort),
-            gamma_renderer:  None,
+            gamma_renderer,
             current_path:    None,
             current_record:  None,
             current_image_tags: vec![],
@@ -2341,20 +2333,12 @@ impl eframe::App for RivettApp {
                     s
                 };
 
-                if self.gamma_renderer.is_none() {
-                    match cc_gl_from_ctx(ctx) {
-                        Some(gl) => {
-                            self.gamma_renderer = Some(Arc::new(Mutex::new(GammaRenderer::new(&gl))));
-                        }
-                        None => {
-                            log::warn!("GL context not available; deferring GPU upload");
-                            self.gpu_upload_queue.push_front((path, rgba, w, h));
-                            ctx.request_repaint();
-                            return;
-                        }
-                    }
-                }
-                let renderer = self.gamma_renderer.as_ref().unwrap().clone();
+                let Some(renderer) = self.gamma_renderer.as_ref().map(Arc::clone) else {
+                    // GL renderer not available (no glow context); put item back and bail.
+                    log::warn!("GL renderer not initialized; deferring GPU upload");
+                    self.gpu_upload_queue.push_front((path, rgba, w, h));
+                    return;
+                };
 
                 let path_clone = path.clone();
                 let keep_closure = keep.clone();
@@ -2503,9 +2487,6 @@ impl eframe::App for RivettApp {
     }
 }
 
-fn cc_gl_from_ctx(ctx: &Context) -> Option<Arc<glow::Context>> {
-    ctx.memory(|mem| mem.data.get_temp::<SendSyncGl>(egui::Id::new("gl_context")).map(|s| s.0))
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
