@@ -424,11 +424,13 @@ fn load_raw(path: &Path) -> Result<DecodedImage, String> {
 
 /// Decode a RAW file's sensor data directly via `rawloader`.
 ///
-/// Only succeeds today when `rawloader` hands back data that's already
-/// interleaved RGB (rare — e.g. some Foveon/line-sensor cameras). The common
-/// case, Bayer-mosaic sensor data (every Sony ARW, most CR2/NEF/etc.),
-/// requires demosaicing that isn't implemented yet, so it's reported as an
-/// error and the caller falls back to extracting an embedded preview JPEG.
+/// Handles two cases: sensor data that's already interleaved RGB (rare —
+/// some Foveon/line-sensor cameras), and standard 2x2 Bayer-mosaic data
+/// (every Sony ARW, most CR2/NEF/RW2/etc.), which is demosaiced with a
+/// bilinear interpolation and converted from camera color space to linear
+/// sRGB via the camera's calibrated XYZ matrix. Non-2x2 CFAs (e.g. Fuji
+/// X-Trans's 6x6 pattern) aren't handled yet and fall through to the
+/// embedded-preview-JPEG fallback in the caller.
 fn try_decode_raw_sensor(path: &Path) -> Result<DecodedImage, String> {
     let raw = rawloader::decode_file(path).map_err(|e| format!("rawloader decode failed: {e:?}"))?;
     let width  = raw.width;
@@ -436,36 +438,213 @@ fn try_decode_raw_sensor(path: &Path) -> Result<DecodedImage, String> {
     match &raw.data {
         rawloader::RawImageData::Integer(data) => {
             if data.len() >= width * height * 3 {
-                let mut rgba = Vec::with_capacity(width * height * 4);
+                let mut rgb = Vec::with_capacity(width * height * 3);
                 for chunk in data.chunks_exact(3) {
-                    rgba.push(chunk[0] as f32 / 65535.0);
-                    rgba.push(chunk[1] as f32 / 65535.0);
-                    rgba.push(chunk[2] as f32 / 65535.0);
-                    rgba.push(1.0);
+                    rgb.push(chunk[0] as f32 / 65535.0);
+                    rgb.push(chunk[1] as f32 / 65535.0);
+                    rgb.push(chunk[2] as f32 / 65535.0);
                 }
-
-                let mut final_rgba = rgba;
-                let mut final_w = width as u32;
-                let mut final_h = height as u32;
-
-                if let Some(orientation) = crate::metadata::get_orientation(path) {
-                    // Temporary conversion to ImageBuffer<Rgba<f32>> to use image crate rotation
-                    if let Some(buffer) = image::ImageBuffer::<image::Rgba<f32>, Vec<f32>>::from_raw(final_w, final_h, final_rgba.clone()) {
-                        let mut dynamic_f32 = image::DynamicImage::ImageRgba32F(buffer);
-                        dynamic_f32 = apply_orientation_to_image(dynamic_f32, orientation);
-                        let rotated_rgba = dynamic_f32.to_rgba32f();
-                        final_w = rotated_rgba.width();
-                        final_h = rotated_rgba.height();
-                        final_rgba = rotated_rgba.into_raw();
-                    }
-                }
-
-                return Ok(DecodedImage::new(final_rgba, final_w, final_h).mark_hdr());
+                return Ok(finish_raw_rgb(rgb, width, height, path));
             }
+
+            if data.len() >= width * height && raw.cfa.is_valid() && raw.cfa.width == 2 && raw.cfa.height == 2 {
+                let (rgb, out_w, out_h) = debayer_bilinear(&raw, data);
+                return Ok(finish_raw_rgb(rgb, out_w, out_h, path));
+            }
+
             Err("Raw sensor data requires debayering (not yet implemented)".to_string())
         }
         _ => Err("Unsupported raw data format (non-integer)".to_string()),
     }
+}
+
+/// Pack interleaved RGB `f32` triples into an RGBA `DecodedImage`, applying
+/// EXIF orientation and marking it as HDR/linear so the gamma shader's
+/// default 2.2 curve (see `app.rs`) renders it correctly.
+fn finish_raw_rgb(rgb: Vec<f32>, width: usize, height: usize, path: &Path) -> DecodedImage {
+    let mut rgba = Vec::with_capacity(width * height * 4);
+    for chunk in rgb.chunks_exact(3) {
+        rgba.push(chunk[0]);
+        rgba.push(chunk[1]);
+        rgba.push(chunk[2]);
+        rgba.push(1.0);
+    }
+
+    let mut final_rgba = rgba;
+    let mut final_w = width as u32;
+    let mut final_h = height as u32;
+
+    if let Some(orientation) = crate::metadata::get_orientation(path) {
+        // Temporary conversion to ImageBuffer<Rgba<f32>> to use image crate rotation
+        if let Some(buffer) = image::ImageBuffer::<image::Rgba<f32>, Vec<f32>>::from_raw(final_w, final_h, final_rgba.clone()) {
+            let mut dynamic_f32 = image::DynamicImage::ImageRgba32F(buffer);
+            dynamic_f32 = apply_orientation_to_image(dynamic_f32, orientation);
+            let rotated_rgba = dynamic_f32.to_rgba32f();
+            final_w = rotated_rgba.width();
+            final_h = rotated_rgba.height();
+            final_rgba = rotated_rgba.into_raw();
+        }
+    }
+
+    DecodedImage::new(final_rgba, final_w, final_h).mark_hdr()
+}
+
+/// Bilinear-interpolation demosaic for a standard 2x2 Bayer CFA (any RGGB /
+/// BGGR / GRBG / GBRG permutation — the layout is read dynamically via
+/// `cfa.color_at` rather than assumed).
+///
+/// Each raw sample is first black-subtracted, white-level-normalized, and
+/// white-balanced (using the camera's own metadata from `rawloader`), then
+/// the missing two channels at each pixel are bilinearly interpolated from
+/// same-color neighbors. The demosaiced camera-RGB image is then converted
+/// to linear sRGB via the camera's calibrated XYZ matrix and cropped to the
+/// sensor's usable area. Returns interleaved RGB (no alpha) plus its
+/// (possibly crop-reduced) dimensions.
+/// Standard sRGB (D65) RGB -> XYZ matrix (rows = X/Y/Z, cols = R/G/B).
+const XYZ_FROM_RGB: [[f32; 3]; 3] = [
+    [0.4124564, 0.3575761, 0.1804375],
+    [0.2126729, 0.7151522, 0.0721750],
+    [0.0193339, 0.1191920, 0.9503041],
+];
+
+/// Build a direct camera-RGB -> linear-sRGB matrix, following dcraw's
+/// `cam_xyz_coeff` algorithm (the de facto standard used by most raw
+/// converters): compose the camera's XYZ calibration matrix with the sRGB
+/// matrix to get a camera<-RGB matrix, normalize each row to sum to 1 (so
+/// that an RGB neutral gray maps to a camera neutral gray), then invert.
+///
+/// This is *not* the same as combining `RawImage::cam_to_xyz()` with a
+/// separate XYZ->sRGB step: `xyz_to_cam` is in dcraw's fixed-point
+/// convention (values are the real matrix times 10000) and, more
+/// importantly, skipping the row-normalization means neutral subjects don't
+/// land on neutral gray after white balance is applied — in practice that
+/// showed up as a strong magenta/pink cast.
+fn camera_to_srgb_matrix(raw: &rawloader::RawImage) -> [[f32; 4]; 3] {
+    let mut xyz_to_cam = [[0f32; 3]; 4];
+    for i in 0..4 {
+        for j in 0..3 {
+            xyz_to_cam[i][j] = raw.xyz_to_cam[i][j] / 10000.0;
+        }
+    }
+
+    // Compose: camera = xyz_to_cam * (rgb_to_xyz), giving RGB -> camera directly.
+    let mut cam_rgb = [[0f32; 3]; 4];
+    for i in 0..4 {
+        for j in 0..3 {
+            let mut sum = 0.0;
+            for k in 0..3 {
+                sum += xyz_to_cam[i][k] * XYZ_FROM_RGB[k][j];
+            }
+            cam_rgb[i][j] = sum;
+        }
+    }
+
+    // Normalize each row so RGB (1,1,1) maps to camera (1,1,1,1).
+    for row in cam_rgb.iter_mut() {
+        let sum: f32 = row.iter().sum();
+        if sum.abs() > 1e-6 {
+            for v in row.iter_mut() {
+                *v /= sum;
+            }
+        }
+    }
+
+    // Invert: camera -> RGB directly.
+    rawloader::RawImage::pseudoinverse(cam_rgb)
+}
+
+fn debayer_bilinear(raw: &rawloader::RawImage, data: &[u16]) -> (Vec<f32>, usize, usize) {
+    let width  = raw.width;
+    let height = raw.height;
+    let cfa    = &raw.cfa;
+
+    let wb   = if raw.wb_coeffs[1] > 0.0 { raw.wb_coeffs } else { raw.neutralwb() };
+    let g_wb = if wb[1] != 0.0 { wb[1] } else { 1.0 };
+
+    // Black-subtract, white-normalize, and white-balance every raw sample.
+    let mut norm = vec![0f32; width * height];
+    for r in 0..height {
+        for c in 0..width {
+            let color  = cfa.color_at(r, c).min(3);
+            let black  = raw.blacklevels[color] as f32;
+            let white  = raw.whitelevels[color] as f32;
+            let range  = (white - black).max(1.0);
+            let wb_mul = if wb[color] != 0.0 { wb[color] / g_wb } else { 1.0 };
+            let idx    = r * width + c;
+            norm[idx]  = (((data[idx] as f32) - black) / range * wb_mul).max(0.0);
+        }
+    }
+
+    let at = |r: isize, c: isize| -> f32 {
+        let rr = r.clamp(0, height as isize - 1) as usize;
+        let cc = c.clamp(0, width  as isize - 1) as usize;
+        norm[rr * width + cc]
+    };
+    let color_at = |r: isize, c: isize| -> usize {
+        let rr = r.clamp(0, height as isize - 1) as usize;
+        let cc = c.clamp(0, width  as isize - 1) as usize;
+        cfa.color_at(rr, cc)
+    };
+
+    // Demosaic into camera-native RGB.
+    let mut cam_rgb = vec![0f32; width * height * 3];
+    for r in 0..height as isize {
+        for c in 0..width as isize {
+            let center = at(r, c);
+            let (rv, gv, bv) = match color_at(r, c) {
+                0 => (
+                    center,
+                    0.25 * (at(r - 1, c) + at(r + 1, c) + at(r, c - 1) + at(r, c + 1)),
+                    0.25 * (at(r - 1, c - 1) + at(r - 1, c + 1) + at(r + 1, c - 1) + at(r + 1, c + 1)),
+                ),
+                2 => (
+                    0.25 * (at(r - 1, c - 1) + at(r - 1, c + 1) + at(r + 1, c - 1) + at(r + 1, c + 1)),
+                    0.25 * (at(r - 1, c) + at(r + 1, c) + at(r, c - 1) + at(r, c + 1)),
+                    center,
+                ),
+                1 => {
+                    if color_at(r, c - 1) == 0 {
+                        (0.5 * (at(r, c - 1) + at(r, c + 1)), center, 0.5 * (at(r - 1, c) + at(r + 1, c)))
+                    } else {
+                        (0.5 * (at(r - 1, c) + at(r + 1, c)), center, 0.5 * (at(r, c - 1) + at(r, c + 1)))
+                    }
+                }
+                _ => (center, center, center), // rare 4th CFA color (e.g. emerald) — treat as neutral
+            };
+            let idx = (r as usize * width + c as usize) * 3;
+            cam_rgb[idx]     = rv;
+            cam_rgb[idx + 1] = gv;
+            cam_rgb[idx + 2] = bv;
+        }
+    }
+
+    // Camera RGB -> linear sRGB directly, via dcraw's own algorithm (see
+    // `camera_to_srgb_matrix`): compose the camera's XYZ calibration with the
+    // sRGB matrix, then normalize and invert so a white-balanced neutral gray
+    // in camera space lands on neutral gray in sRGB.
+    let m = camera_to_srgb_matrix(raw);
+    let mut srgb = vec![0f32; width * height * 3];
+    for i in 0..(width * height) {
+        let r = cam_rgb[i * 3];
+        let g = cam_rgb[i * 3 + 1];
+        let b = cam_rgb[i * 3 + 2];
+
+        srgb[i * 3]     = (m[0][0] * r + m[0][1] * g + m[0][2] * b).max(0.0);
+        srgb[i * 3 + 1] = (m[1][0] * r + m[1][1] * g + m[1][2] * b).max(0.0);
+        srgb[i * 3 + 2] = (m[2][0] * r + m[2][1] * g + m[2][2] * b).max(0.0);
+    }
+
+    // Crop to the sensor's usable area (crops = [top, right, bottom, left]).
+    let [top, right, bottom, left] = raw.crops;
+    let out_w = width.saturating_sub(left + right).max(1);
+    let out_h = height.saturating_sub(top + bottom).max(1);
+    let mut out = Vec::with_capacity(out_w * out_h * 3);
+    for r in top..(top + out_h) {
+        let row_start = (r * width + left) * 3;
+        out.extend_from_slice(&srgb[row_start..row_start + out_w * 3]);
+    }
+
+    (out, out_w, out_h)
 }
 
 /// Generic fallback that scans a file for JPEG markers and returns the largest valid one.
