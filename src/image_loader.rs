@@ -379,58 +379,15 @@ pub fn load_image(path: &Path) -> Result<DecodedImage, String> {
 
 fn load_raw(path: &Path) -> Result<DecodedImage, String> {
     let ext = path.extension().and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase());
-    
+
     // Special handling for modern Canon .CR3 (ISO BMFF container)
     if ext == Some("cr3".to_string()) {
         return load_any_embedded_jpeg(path);
     }
 
-    // Standard RAW formats via rawloader
-    match rawloader::decode_file(path) {
-        Ok(raw) => {
-            let width  = raw.width;
-            let height = raw.height;
-            match &raw.data {
-                rawloader::RawImageData::Integer(data) => {
-                    let mut rgba = Vec::with_capacity(width * height * 4);
-                    if data.len() >= width * height * 3 {
-                        for chunk in data.chunks_exact(3) {
-                            rgba.push(chunk[0] as f32 / 65535.0);
-                            rgba.push(chunk[1] as f32 / 65535.0);
-                            rgba.push(chunk[2] as f32 / 65535.0);
-                            rgba.push(1.0);
-                        }
-                        // Note: rawloader Integer data is typically 16-bit.
-                        // We still use apply_orientation_to_image via a temporary DynamicImage
-                        // if needed, but for now we'll just handle rotation in ViewerState if possible.
-                        // Actually, let's keep the existing rotation logic by converting to f32 after rotation
-                        // or rotating f32.
-                        
-                        // For simplicity, let's rotate the data if needed.
-                        let mut final_rgba = rgba;
-                        let mut final_w = width as u32;
-                        let mut final_h = height as u32;
-
-                        if let Some(orientation) = crate::metadata::get_orientation(path) {
-                            // Temporary conversion to ImageBuffer<Rgba<f32>> to use image crate rotation
-                            if let Some(buffer) = image::ImageBuffer::<image::Rgba<f32>, Vec<f32>>::from_raw(final_w, final_h, final_rgba.clone()) {
-                                let mut dynamic_f32 = image::DynamicImage::ImageRgba32F(buffer);
-                                dynamic_f32 = apply_orientation_to_image(dynamic_f32, orientation);
-                                let rotated_rgba = dynamic_f32.to_rgba32f();
-                                final_w = rotated_rgba.width();
-                                final_h = rotated_rgba.height();
-                                final_rgba = rotated_rgba.into_raw();
-                            }
-                        }
-
-                        return Ok(DecodedImage::new(final_rgba, final_w, final_h).mark_hdr());
-                    }
-                    Err("Raw sensor data requires debayering (not yet implemented)".to_string())
-                }
-                _ => Err("Unsupported raw data format (non-integer)".to_string()),
-            }
-        }
-        Err(raw_err) => {
+    match try_decode_raw_sensor(path) {
+        Ok(img) => Ok(img),
+        Err(sensor_err) => {
             // Fallback 1: Try the image crate directly (handles some TIFF/DNG variants rawloader rejects)
             let res = (|| {
                 let file = std::fs::File::open(path).ok()?;
@@ -453,13 +410,61 @@ fn load_raw(path: &Path) -> Result<DecodedImage, String> {
                 return Ok(decoded);
             }
 
-            // Fallback 3: Generic JPEG search
+            // Fallback 3: Generic JPEG search (also covers the common case of a
+            // full-resolution or near-full-resolution embedded preview in
+            // Bayer-mosaic RAWs, e.g. Sony ARW, that we don't yet demosaic).
             if let Ok(decoded) = load_any_embedded_jpeg(path) {
                 return Ok(decoded);
             }
 
-            Err(format!("rawloader decode failed: {raw_err:?}"))
+            Err(format!("raw decode failed: {sensor_err}"))
         }
+    }
+}
+
+/// Decode a RAW file's sensor data directly via `rawloader`.
+///
+/// Only succeeds today when `rawloader` hands back data that's already
+/// interleaved RGB (rare — e.g. some Foveon/line-sensor cameras). The common
+/// case, Bayer-mosaic sensor data (every Sony ARW, most CR2/NEF/etc.),
+/// requires demosaicing that isn't implemented yet, so it's reported as an
+/// error and the caller falls back to extracting an embedded preview JPEG.
+fn try_decode_raw_sensor(path: &Path) -> Result<DecodedImage, String> {
+    let raw = rawloader::decode_file(path).map_err(|e| format!("rawloader decode failed: {e:?}"))?;
+    let width  = raw.width;
+    let height = raw.height;
+    match &raw.data {
+        rawloader::RawImageData::Integer(data) => {
+            if data.len() >= width * height * 3 {
+                let mut rgba = Vec::with_capacity(width * height * 4);
+                for chunk in data.chunks_exact(3) {
+                    rgba.push(chunk[0] as f32 / 65535.0);
+                    rgba.push(chunk[1] as f32 / 65535.0);
+                    rgba.push(chunk[2] as f32 / 65535.0);
+                    rgba.push(1.0);
+                }
+
+                let mut final_rgba = rgba;
+                let mut final_w = width as u32;
+                let mut final_h = height as u32;
+
+                if let Some(orientation) = crate::metadata::get_orientation(path) {
+                    // Temporary conversion to ImageBuffer<Rgba<f32>> to use image crate rotation
+                    if let Some(buffer) = image::ImageBuffer::<image::Rgba<f32>, Vec<f32>>::from_raw(final_w, final_h, final_rgba.clone()) {
+                        let mut dynamic_f32 = image::DynamicImage::ImageRgba32F(buffer);
+                        dynamic_f32 = apply_orientation_to_image(dynamic_f32, orientation);
+                        let rotated_rgba = dynamic_f32.to_rgba32f();
+                        final_w = rotated_rgba.width();
+                        final_h = rotated_rgba.height();
+                        final_rgba = rotated_rgba.into_raw();
+                    }
+                }
+
+                return Ok(DecodedImage::new(final_rgba, final_w, final_h).mark_hdr());
+            }
+            Err("Raw sensor data requires debayering (not yet implemented)".to_string())
+        }
+        _ => Err("Unsupported raw data format (non-integer)".to_string()),
     }
 }
 
@@ -647,7 +652,8 @@ impl ImageCache {
         pending.insert(path, thread::spawn(move || {
             match load_image(&p) {
                 Ok(img) => { let _ = tx.send((p, img)); }
-                Err(_) => {
+                Err(e) => {
+                    log::warn!("failed to load image {}: {e}", p.display());
                     if let Ok(mut m) = pending_ref.lock() {
                         m.remove(&p);
                     }
