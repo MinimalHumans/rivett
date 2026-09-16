@@ -49,6 +49,10 @@ pub struct RivettApp {
     toast:           Option<Toast>,
     delete_confirm:  Option<DeleteConfirm>,
 
+    /// Temporary always-on-top toggle. Session-only by design — never persisted,
+    /// always starts false so the window doesn't come back pinned on next launch.
+    pinned:          bool,
+
     // Drag-out state
     pending_drag_out:  bool, // set on gesture detection; consumed at top of next update()
 
@@ -126,6 +130,7 @@ impl RivettApp {
             show_help:       false,
             toast:           None,
             delete_confirm:  None,
+            pinned:          false,
             pending_drag_out:     false,
             save_as_state:   None,
             utilities:       UtilitiesState::default(),
@@ -744,6 +749,18 @@ impl RivettApp {
         }
     }
 
+    /// Toggle temporary always-on-top. Not persisted across launches — unreliable
+    /// on Wayland, but works on Windows/X11.
+    fn toggle_pin(&mut self, ctx: &Context) {
+        self.pinned = !self.pinned;
+        let level = if self.pinned {
+            egui::WindowLevel::AlwaysOnTop
+        } else {
+            egui::WindowLevel::Normal
+        };
+        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
+    }
+
     // ── Keyboard ─────────────────────────────────────────────────────
 
     fn handle_keyboard(&mut self, ctx: &Context) {
@@ -825,6 +842,8 @@ impl RivettApp {
         }
 
         if input.key_pressed(Key::H) { self.hide_current(ctx); }
+
+        if input.key_pressed(Key::P) { self.toggle_pin(ctx); }
 
         if input.key_pressed(Key::OpenBracket) {
             self.rotate_current(false, ctx);
@@ -1965,6 +1984,12 @@ impl RivettApp {
                 self.show_info_panel = !self.show_info_panel;
                 self.settings.show_info_panel = self.show_info_panel;
                 let _ = self.settings.save();
+                ui.close_menu();
+            }
+
+            let pin_label = if self.pinned { "Unpin window" } else { "Pin window on top" };
+            if ui.add(egui::Button::new(pin_label).shortcut_text("P")).clicked() {
+                self.toggle_pin(ctx);
                 ui.close_menu();
             }
 
