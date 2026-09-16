@@ -18,6 +18,19 @@ pub enum SortOrder {
     FileSize,
 }
 
+/// DEFLATE compression effort for PNG output. Lossless either way — this only
+/// trades encode speed against file size, never visual quality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PngCompression {
+    /// Minimal compression, fastest encode. Matches the `image` crate's own default.
+    #[default]
+    Fast,
+    Default,
+    /// Smallest file, slowest encode.
+    Best,
+}
+
 /// Which database(s) Rivett reads and writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -67,6 +80,10 @@ pub struct AppSettings {
     pub show_info_panel: bool,
     /// Default state for "Preserve metadata" in Save As dialog.
     pub preserve_metadata: bool,
+    /// Default JPEG output quality (1-100) offered in the Save As dialog.
+    pub jpeg_quality:    u8,
+    /// Default PNG compression effort offered in the Save As dialog.
+    pub png_compression: PngCompression,
 }
 
 impl Default for AppSettings {
@@ -78,6 +95,10 @@ impl Default for AppSettings {
             central_db_path: None,
             show_info_panel: false, // Collapsed by default
             preserve_metadata: true,
+            // Matches the `image` crate's own prior defaults, so existing behavior
+            // is unchanged until a user actually opens the sliders and adjusts them.
+            jpeg_quality:    75,
+            png_compression: PngCompression::Fast,
         }
     }
 }
@@ -170,6 +191,9 @@ mod tests {
             window_geometry: Some(WindowGeometry { x: 50, y: 50, width: 1920, height: 1080 }),
             central_db_path: Some(PathBuf::from("/tmp/test.db")),
             show_info_panel: true,
+            preserve_metadata: true,
+            jpeg_quality:    90,
+            png_compression: PngCompression::Best,
         };
         let json     = serde_json::to_string(&original).unwrap();
         let restored: AppSettings = serde_json::from_str(&json).unwrap();
@@ -180,5 +204,16 @@ mod tests {
         let geom = restored.window_geometry.unwrap();
         assert_eq!(geom.width, 1920);
         assert_eq!(geom.height, 1080);
+        assert_eq!(restored.jpeg_quality,    original.jpeg_quality);
+        assert_eq!(restored.png_compression, original.png_compression);
+    }
+
+    #[test]
+    fn png_compression_round_trips() {
+        for c in [PngCompression::Fast, PngCompression::Default, PngCompression::Best] {
+            let json  = serde_json::to_string(&c).unwrap();
+            let back: PngCompression = serde_json::from_str(&json).unwrap();
+            assert_eq!(c, back);
+        }
     }
 }

@@ -14,7 +14,7 @@ use crate::image_loader::{ImageCache, DirectoryListing};
 use crate::metadata::{read_metadata, MetaEntry};
 use crate::formats::SupportedFormat;
 use crate::session::{SessionState, Rotation, RatingFilter, RatingFilterOp};
-use crate::settings::AppSettings;
+use crate::settings::{AppSettings, PngCompression};
 use crate::viewer::ViewerState;
 use crate::renderer::GammaRenderer;
 use crate::utilities::UtilitiesState;
@@ -72,6 +72,21 @@ struct SaveAsState {
     output_path:       std::path::PathBuf,
     preserve_metadata: bool,
     focus_requested:   bool,
+    /// Intrinsic size of the source SVG in pixels, calculated once (from the
+    /// document's own width/height/viewBox) when the dialog opens. `None` for
+    /// non-SVG sources.
+    svg_native_size:   Option<(f32, f32)>,
+    /// Editable output width/height (px) and scale (× native size); kept in
+    /// sync with each other and with the native aspect ratio as the user
+    /// edits any one of them.
+    svg_width:         f32,
+    svg_height:        f32,
+    svg_scale:         f32,
+    /// Output encode settings — only the one matching `output_path`'s extension
+    /// is shown, but both are carried so switching the dropdown (if we ever add
+    /// one) wouldn't lose the other's value.
+    jpeg_quality:      u8,
+    png_compression:   PngCompression,
 }
 
 impl RivettApp {
@@ -655,7 +670,8 @@ impl RivettApp {
         let cached_clone = self.image_cache.get(&path).cloned();
         
         let result = if strip_metadata {
-            save_image_as(&path, &path, rotation, cached_clone.as_ref(), false)
+            let encode_opts = EncodeOptions { jpeg_quality: self.settings.jpeg_quality, png_compression: self.settings.png_compression };
+            save_image_as(&path, &path, rotation, cached_clone.as_ref(), false, encode_opts)
         } else {
             match fmt {
                 SupportedFormat::Jpeg => save_jpeg_exif_rotation(&path, rotation),
@@ -852,31 +868,44 @@ impl RivettApp {
     fn save_as(&mut self, _ctx: &Context) {
         let Some(path) = self.current_path.clone() else { return };
 
+        // Suggest the source's file stem but *our own* default extension (never the
+        // source's), and keep the default filter in sync with it — mismatching the two
+        // is what let the OS dialog hand back a path with neither a jpg/jpeg/png
+        // extension (e.g. still ".svg"), which made the Save As modal silently skip the
+        // JPEG/PNG encode-options section below.
+        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+
         let dialog = rfd::FileDialog::new()
-            .set_file_name(path.file_name().unwrap_or_default().to_string_lossy())
-            .add_filter("JPEG", &["jpg", "jpeg"])
-            .add_filter("PNG", &["png"]);
+            .set_file_name(format!("{stem}.png"))
+            .add_filter("PNG", &["png"])
+            .add_filter("JPEG", &["jpg", "jpeg"]);
 
         if let Some(output_path) = dialog.save_file() {
-            // Only show the confirmation modal if there is actual metadata that can be toggled.
-            // If the metadata list only contains headers or is empty, skip the modal.
-            let has_togglable_metadata = self.metadata.iter().any(|m| !m.is_header);
-            
-            if has_togglable_metadata {
-                self.save_as_state = Some(SaveAsState {
-                    output_path,
-                    preserve_metadata: self.settings.preserve_metadata,
-                    focus_requested: false,
-                });
+            let output_path = normalize_save_extension(output_path);
+
+            let is_svg = matches!(SupportedFormat::from_path(&path), Some(SupportedFormat::Svg));
+            let svg_native_size = if is_svg {
+                crate::image_loader::svg_native_size(&path).ok()
             } else {
-                // No metadata to preserve or configure -> save immediately
-                let state = SaveAsState {
-                    output_path,
-                    preserve_metadata: false,
-                    focus_requested: true,
-                };
-                self.perform_save_as(&state);
-            }
+                None
+            };
+            let (svg_width, svg_height) = svg_native_size.unwrap_or((0.0, 0.0));
+
+            // Always confirm through the modal: there's always at least a format-specific
+            // JPEG quality / PNG compression setting to review, on top of any metadata
+            // toggle or SVG scale — defaults are pre-filled, so hitting Save immediately
+            // behaves the same as a plain save.
+            self.save_as_state = Some(SaveAsState {
+                output_path,
+                preserve_metadata: self.settings.preserve_metadata,
+                focus_requested: false,
+                svg_native_size,
+                svg_width,
+                svg_height,
+                svg_scale: 1.0,
+                jpeg_quality:    self.settings.jpeg_quality,
+                png_compression: self.settings.png_compression,
+            });
         }
     }
 
@@ -884,42 +913,183 @@ impl RivettApp {
         let Some(mut state) = self.save_as_state.take() else { return };
         let mut should_close = false;
 
-        egui::Window::new("Save Image As")
+        let title = if state.svg_native_size.is_some() { "Save SVG" } else { "Save Image As" };
+
+        egui::Window::new(title)
             .collapsible(false)
             .resizable(false)
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(ctx.screen_rect().center())
             .show(ctx, |ui| {
                 ui.vertical(|ui| {
-                    ui.label(format!("Path: {}", state.output_path.display()));
-                    ui.add_space(8.0);
+                    // Secondary/helper text color: brighter than plain `.weak()`, which
+                    // reads as too dim, but still a clear step below full-strength text.
+                    let muted = ui.visuals().text_color().gamma_multiply(0.85);
+                    let is_svg = state.svg_native_size.is_some();
 
-                    let has_metadata = self.metadata.iter().any(|m| !m.is_header);
-                    if has_metadata {
-                        if ui.checkbox(&mut state.preserve_metadata, "Preserve metadata").changed() {
-                            self.settings.preserve_metadata = state.preserve_metadata;
-                            let _ = self.settings.save();
-                        }
-                        ui.add_space(12.0);
-                    } else {
-                        state.preserve_metadata = false;
+                    if is_svg {
+                        ui.label(egui::RichText::new("Override SVG Dimensions").strong());
+                        ui.add_space(6.0);
                     }
 
-                    ui.horizontal(|ui| {
-                        let save_btn = ui.button("Save");
-                        
-                        if !state.focus_requested {
-                            save_btn.request_focus();
-                            state.focus_requested = true;
-                        }
+                    // A single, consistent field width for every control in the form —
+                    // this (not a 4-column grid) is what actually keeps rows aligned,
+                    // since a Grid column's width is the max over every row in it, and
+                    // mixing narrow DragValues with wide button groups in one column is
+                    // what produced the huge gaps in the previous layout.
+                    let field_height = ui.spacing().interact_size.y;
+                    let field_width  = 220.0;
 
-                        if save_btn.clicked() {
-                            self.perform_save_as(&state);
-                            should_close = true;
+                    egui::Grid::new("save_as_grid")
+                        .num_columns(2)
+                        .spacing([12.0, 8.0])
+                        .show(ui, |ui| {
+                            if let Some((native_w, native_h)) = state.svg_native_size {
+                                let aspect = if native_h > 0.0 { native_w / native_h } else { 1.0 };
+
+                                ui.label("Width (px)");
+                                let r_w = ui.add_sized([field_width, field_height], egui::DragValue::new(&mut state.svg_width)
+                                    .speed(1.0)
+                                    .range(1.0..=100_000.0)
+                                    .fixed_decimals(0));
+                                ui.end_row();
+
+                                ui.label("Height (px)");
+                                let r_h = ui.add_sized([field_width, field_height], egui::DragValue::new(&mut state.svg_height)
+                                    .speed(1.0)
+                                    .range(1.0..=100_000.0)
+                                    .fixed_decimals(0));
+                                ui.end_row();
+
+                                if r_w.changed() {
+                                    state.svg_height = (state.svg_width / aspect).round().max(1.0);
+                                    state.svg_scale  = state.svg_width / native_w;
+                                } else if r_h.changed() {
+                                    state.svg_width = (state.svg_height * aspect).round().max(1.0);
+                                    state.svg_scale = state.svg_height / native_h;
+                                }
+
+                                // Directly under the W/H fields, as secondary helper text.
+                                ui.label("");
+                                ui.colored_label(muted, format!("Original: {native_w:.0} × {native_h:.0} px"));
+                                ui.end_row();
+
+                                ui.label("Scale");
+                                ui.horizontal(|ui| {
+                                    let r_s = ui.add_sized([70.0, field_height], egui::DragValue::new(&mut state.svg_scale)
+                                        .speed(0.05)
+                                        .range(0.001..=1000.0)
+                                        .max_decimals(2)
+                                        .suffix("x"));
+                                    if r_s.changed() {
+                                        state.svg_width  = (native_w * state.svg_scale).round().max(1.0);
+                                        state.svg_height = (native_h * state.svg_scale).round().max(1.0);
+                                    }
+
+                                    ui.add_space(4.0);
+                                    for preset in [1.0, 2.0, 4.0] {
+                                        let selected = (state.svg_scale - preset).abs() < 0.001;
+                                        if ui.selectable_label(selected, format!("{preset:.0}x")).clicked() {
+                                            state.svg_scale  = preset;
+                                            state.svg_width  = (native_w * preset).round().max(1.0);
+                                            state.svg_height = (native_h * preset).round().max(1.0);
+                                        }
+                                    }
+                                });
+                                ui.end_row();
+                            }
+
+                            match state.output_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase().as_str() {
+                                "jpg" | "jpeg" => {
+                                    ui.label("JPEG quality");
+                                    let r = ui.add_sized([field_width, field_height], egui::Slider::new(&mut state.jpeg_quality, 1..=100));
+                                    if r.changed() {
+                                        self.settings.jpeg_quality = state.jpeg_quality;
+                                        let _ = self.settings.save();
+                                    }
+                                    ui.end_row();
+                                }
+                                "png" => {
+                                    ui.label("PNG compression");
+                                    ui.horizontal(|ui| {
+                                        for (label, value) in [
+                                            ("Fast",    PngCompression::Fast),
+                                            ("Default", PngCompression::Default),
+                                            ("Best",    PngCompression::Best),
+                                        ] {
+                                            if ui.selectable_label(state.png_compression == value, label).clicked() {
+                                                state.png_compression = value;
+                                                self.settings.png_compression = value;
+                                                let _ = self.settings.save();
+                                            }
+                                        }
+                                    });
+                                    ui.end_row();
+                                }
+                                _ => {}
+                            }
+
+                            let has_metadata = self.metadata.iter().any(|m| !m.is_header);
+                            if has_metadata {
+                                ui.label("Metadata");
+                                if ui.checkbox(&mut state.preserve_metadata, "Preserve metadata").changed() {
+                                    self.settings.preserve_metadata = state.preserve_metadata;
+                                    let _ = self.settings.save();
+                                }
+                                ui.end_row();
+                            } else {
+                                state.preserve_metadata = false;
+                            }
+                        });
+
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+
+                    ui.horizontal(|ui| {
+                        let full_path_str = state.output_path.display().to_string();
+                        let mut shown = truncate_path_middle(&full_path_str, 32);
+                        ui.add_sized([field_width, field_height], egui::TextEdit::singleline(&mut shown)
+                            .text_color(muted)
+                            .interactive(false))
+                            .on_hover_text(&full_path_str);
+
+                        if ui.small_button("…").on_hover_text("Change save location").clicked() {
+                            let mut dialog = rfd::FileDialog::new()
+                                .set_file_name(state.output_path.file_name().unwrap_or_default().to_string_lossy())
+                                .add_filter("PNG", &["png"])
+                                .add_filter("JPEG", &["jpg", "jpeg"]);
+                            if let Some(parent) = state.output_path.parent() {
+                                dialog = dialog.set_directory(parent);
+                            }
+                            if let Some(new_path) = dialog.save_file() {
+                                state.output_path = normalize_save_extension(new_path);
+                            }
                         }
-                        if ui.button("Cancel").clicked() {
-                            should_close = true;
-                        }
+                    });
+                    ui.add_space(10.0);
+
+                    // Bounded to one row's height first, so the right-aligned inner layout
+                    // can't claim the rest of the window's remaining height (that runaway
+                    // growth was the cause of the oversized dialog).
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let accent = ui.visuals().selection.bg_fill;
+                            let save_btn = ui.add(egui::Button::new("Save").fill(accent));
+
+                            if !state.focus_requested {
+                                save_btn.request_focus();
+                                state.focus_requested = true;
+                            }
+
+                            if save_btn.clicked() {
+                                self.perform_save_as(&state);
+                                should_close = true;
+                            }
+                            if ui.button("Cancel").clicked() {
+                                should_close = true;
+                            }
+                        });
                     });
                 });
             });
@@ -1033,11 +1203,25 @@ impl RivettApp {
 
     fn perform_save_as(&mut self, state: &SaveAsState) {
         let Some(src_path) = self.current_path.clone() else { return };
-        
+
         let rotation = self.session.rotation_for(&src_path);
-        let cached = self.image_cache.get(&src_path);
-        
-        match save_image_as(&src_path, &state.output_path, rotation, cached, state.preserve_metadata) {
+        let encode_opts = EncodeOptions { jpeg_quality: state.jpeg_quality, png_compression: state.png_compression };
+
+        let result = if state.svg_native_size.is_some() {
+            // Re-render from the source document at the requested output size rather
+            // than resampling the cached on-screen raster, so upscaled exports stay sharp.
+            let width  = state.svg_width.round().max(1.0) as u32;
+            let height = state.svg_height.round().max(1.0) as u32;
+            match crate::image_loader::render_svg_to_size(&src_path, width, height) {
+                Ok(decoded) => save_image_as(&src_path, &state.output_path, rotation, Some(&decoded), state.preserve_metadata, encode_opts),
+                Err(e) => Err(e),
+            }
+        } else {
+            let cached = self.image_cache.get(&src_path);
+            save_image_as(&src_path, &state.output_path, rotation, cached, state.preserve_metadata, encode_opts)
+        };
+
+        match result {
             Ok(()) => self.toast("Saved successfully", ToastKind::General),
             Err(e) => self.toast(format!("Save failed: {e}"), ToastKind::General),
         }
@@ -1903,9 +2087,7 @@ impl Modifiers {
     const SHIFT: Self = Self { shift: true, ..Self::NONE };
     const ALT:   Self = Self { alt: true,   ..Self::NONE };
 
-    fn ctrl(mut self) -> Self { self.ctrl = true; self }
     fn shift(mut self) -> Self { self.shift = true; self }
-    fn alt(mut self) -> Self { self.alt = true; self }
 }
 
 /// Returns a platform-appropriate label for a key combination.
@@ -1987,6 +2169,41 @@ fn rotation_to_exif_orientation(r: Rotation) -> u16 {
     }
 }
 
+/// Ensures a Save As target always ends in a format we can actually encode.
+/// The OS dialog is seeded with a `.png` suggestion, but a user can still edit
+/// the filename and drop or change the extension to something neither of our
+/// two filters cover — defaulting to `.png` here keeps the Save As modal and
+/// the eventual encoder in agreement no matter what comes back.
+fn normalize_save_extension(path: std::path::PathBuf) -> std::path::PathBuf {
+    let has_supported_ext = matches!(
+        path.extension().and_then(|e| e.to_str()).map(str::to_lowercase).as_deref(),
+        Some("png") | Some("jpg") | Some("jpeg")
+    );
+    if has_supported_ext { path } else { path.with_extension("png") }
+}
+
+/// Collapses the middle of a long path into `...`, keeping the start (drive/root)
+/// and end (filename) visible, so long paths don't force the Save As dialog wide.
+fn truncate_path_middle(path: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = path.chars().collect();
+    if chars.len() <= max_chars {
+        return path.to_string();
+    }
+    let keep = max_chars.saturating_sub(3); // reserve room for "..."
+    let head = keep / 2;
+    let tail = keep - head;
+    let head_str: String = chars[..head].iter().collect();
+    let tail_str: String = chars[chars.len() - tail..].iter().collect();
+    format!("{head_str}...{tail_str}")
+}
+
+/// Output encode settings for JPEG/PNG, surfaced in the Save As dialog.
+#[derive(Clone, Copy)]
+struct EncodeOptions {
+    jpeg_quality:    u8,
+    png_compression: PngCompression,
+}
+
 /// Save the image to a new path with optional metadata preservation.
 fn save_image_as(
     src_path: &Path,
@@ -1994,6 +2211,7 @@ fn save_image_as(
     rotation: Rotation,
     cached: Option<&crate::image_loader::DecodedImage>,
     preserve_metadata: bool,
+    encode_opts: EncodeOptions,
 ) -> Result<(), String> {
     use img_parts::{Bytes, ImageEXIF, jpeg::Jpeg, png::Png};
 
@@ -2019,7 +2237,29 @@ fn save_image_as(
 
     // 3. Encode image
     let mut encoded_data = Vec::new();
-    rotated.write_to(&mut std::io::Cursor::new(&mut encoded_data), format).map_err(|e| e.to_string())?;
+    match format {
+        image::ImageFormat::Jpeg => {
+            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
+                std::io::Cursor::new(&mut encoded_data),
+                encode_opts.jpeg_quality,
+            );
+            rotated.write_with_encoder(encoder).map_err(|e| e.to_string())?;
+        }
+        image::ImageFormat::Png => {
+            let compression = match encode_opts.png_compression {
+                PngCompression::Fast    => image::codecs::png::CompressionType::Fast,
+                PngCompression::Default => image::codecs::png::CompressionType::Default,
+                PngCompression::Best    => image::codecs::png::CompressionType::Best,
+            };
+            let encoder = image::codecs::png::PngEncoder::new_with_quality(
+                std::io::Cursor::new(&mut encoded_data),
+                compression,
+                image::codecs::png::FilterType::Adaptive,
+            );
+            rotated.write_with_encoder(encoder).map_err(|e| e.to_string())?;
+        }
+        _ => unreachable!("format already validated above"),
+    }
 
     // 4. Preserve metadata if requested
     if preserve_metadata {
@@ -2617,4 +2857,102 @@ fn draw_tag_pill(ui: &mut egui::Ui, tag: &TagRecord) -> bool {
     ui.painter().text(x_pos, egui::Align2::RIGHT_CENTER, "✖", font_id, fg_color);
 
     response.clicked()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A synthetic gradient (not a flat color) so JPEG quality and PNG
+    /// compression settings actually have something non-trivial to compress.
+    fn gradient_image(size: u32) -> crate::image_loader::DecodedImage {
+        let mut pixels = vec![0u8; (size * size * 4) as usize];
+        for y in 0..size {
+            for x in 0..size {
+                let i = ((y * size + x) * 4) as usize;
+                pixels[i]     = (x % 256) as u8;
+                pixels[i + 1] = (y % 256) as u8;
+                pixels[i + 2] = ((x + y) % 256) as u8;
+                pixels[i + 3] = 255;
+            }
+        }
+        crate::image_loader::DecodedImage::new_from_u8(pixels, size, size)
+    }
+
+    #[test]
+    fn save_image_as_respects_jpeg_quality() {
+        let dir      = tempfile::tempdir().unwrap();
+        let src_path = dir.path().join("in.png"); // only read back for metadata, which is disabled here
+        let decoded  = gradient_image(128);
+
+        let low_path  = dir.path().join("low.jpg");
+        let high_path = dir.path().join("high.jpg");
+        save_image_as(&src_path, &low_path, Rotation::None, Some(&decoded), false,
+            EncodeOptions { jpeg_quality: 5, png_compression: PngCompression::Fast }).unwrap();
+        save_image_as(&src_path, &high_path, Rotation::None, Some(&decoded), false,
+            EncodeOptions { jpeg_quality: 100, png_compression: PngCompression::Fast }).unwrap();
+
+        let low_size  = std::fs::metadata(&low_path).unwrap().len();
+        let high_size = std::fs::metadata(&high_path).unwrap().len();
+        assert!(low_size < high_size,
+            "quality 5 ({low_size} bytes) should be smaller than quality 100 ({high_size} bytes)");
+    }
+
+    #[test]
+    fn save_image_as_respects_png_compression() {
+        let dir      = tempfile::tempdir().unwrap();
+        let src_path = dir.path().join("in.png");
+        let decoded  = gradient_image(128);
+
+        let fast_path = dir.path().join("fast.png");
+        let best_path = dir.path().join("best.png");
+        save_image_as(&src_path, &fast_path, Rotation::None, Some(&decoded), false,
+            EncodeOptions { jpeg_quality: 90, png_compression: PngCompression::Fast }).unwrap();
+        save_image_as(&src_path, &best_path, Rotation::None, Some(&decoded), false,
+            EncodeOptions { jpeg_quality: 90, png_compression: PngCompression::Best }).unwrap();
+
+        let fast_size = std::fs::metadata(&fast_path).unwrap().len();
+        let best_size = std::fs::metadata(&best_path).unwrap().len();
+        assert!(best_size <= fast_size,
+            "Best compression ({best_size} bytes) should be no larger than Fast ({fast_size} bytes)");
+    }
+
+    #[test]
+    fn normalize_save_extension_leaves_supported_extensions_alone() {
+        for ext in ["png", "jpg", "jpeg", "PNG", "JPG"] {
+            let p = std::path::PathBuf::from(format!("C:/out/file.{ext}"));
+            assert_eq!(normalize_save_extension(p.clone()), p);
+        }
+    }
+
+    #[test]
+    fn normalize_save_extension_defaults_unsupported_extensions_to_png() {
+        // Reproduces the bug: the dialog's suggested filename carried over the
+        // *source* image's extension (e.g. an SVG), so a user who didn't retype it
+        // got back a path the Save As modal couldn't recognize as JPEG or PNG.
+        let p = std::path::PathBuf::from("C:/out/icon.svg");
+        assert_eq!(normalize_save_extension(p), std::path::PathBuf::from("C:/out/icon.png"));
+
+        let p = std::path::PathBuf::from("C:/out/photo.tiff");
+        assert_eq!(normalize_save_extension(p), std::path::PathBuf::from("C:/out/photo.png"));
+
+        let p = std::path::PathBuf::from("C:/out/no_extension");
+        assert_eq!(normalize_save_extension(p), std::path::PathBuf::from("C:/out/no_extension.png"));
+    }
+
+    #[test]
+    fn truncate_path_middle_leaves_short_paths_untouched() {
+        let p = r"C:\Users\jesse\Desktop\logo.svg";
+        assert_eq!(truncate_path_middle(p, 56), p);
+    }
+
+    #[test]
+    fn truncate_path_middle_collapses_long_paths_around_an_ellipsis() {
+        let p = r"C:\Users\jesse\Documents\Projects\very\deeply\nested\folder\structure\logo.svg";
+        let out = truncate_path_middle(p, 40);
+        assert_eq!(out.chars().count(), 40);
+        assert!(out.contains("..."));
+        assert!(out.starts_with("C:\\Users"));
+        assert!(out.ends_with("logo.svg"));
+    }
 }

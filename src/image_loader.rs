@@ -709,18 +709,66 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|window| window == needle)
 }
 
-fn load_svg(path: &Path) -> Result<DecodedImage, String> {
+fn parse_svg_tree(path: &Path) -> Result<resvg::usvg::Tree, String> {
     let opt = resvg::usvg::Options::default();
     let data = std::fs::read(path).map_err(|e| e.to_string())?;
-    let tree = resvg::usvg::Tree::from_data(&data, &opt).map_err(|e| e.to_string())?;
-    
-    let pixmap_size = tree.size().to_int_size();
-    let mut pixmap = resvg::tiny_skia::Pixmap::new(pixmap_size.width(), pixmap_size.height())
+    resvg::usvg::Tree::from_data(&data, &opt).map_err(|e| e.to_string())
+}
+
+/// The SVG document's intrinsic size in pixels, as resolved by usvg (physical
+/// units like `mm`/`pt`/`in` are converted using its default 96 DPI). This is
+/// a cheap XML-only parse — no rasterization — so callers can compute it once
+/// (e.g. when opening the Save As dialog) and reuse it to turn a scale factor
+/// into a target pixel resolution without re-parsing the file each frame.
+pub fn svg_native_size(path: &Path) -> Result<(f32, f32), String> {
+    let size = parse_svg_tree(path)?.size();
+    Ok((size.width(), size.height()))
+}
+
+/// Rasterizes the SVG at `scale` × its intrinsic size, re-rendering from the
+/// source document rather than resampling an already-decoded pixmap, so
+/// upscaling for export stays sharp regardless of what resolution the on-screen
+/// preview happened to be decoded at.
+pub fn render_svg_at_scale(path: &Path, scale: f32) -> Result<DecodedImage, String> {
+    let tree = parse_svg_tree(path)?;
+    let size = tree.size();
+    let width  = ((size.width()  * scale).round() as u32).max(1);
+    let height = ((size.height() * scale).round() as u32).max(1);
+
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)
         .ok_or("Failed to create pixmap")?;
-    
-    resvg::render(&tree, resvg::tiny_skia::Transform::default(), &mut pixmap.as_mut());
-    
-    Ok(DecodedImage::new_from_u8(pixmap.take(), pixmap_size.width(), pixmap_size.height()))
+
+    let transform = resvg::tiny_skia::Transform::from_scale(scale, scale);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+
+    Ok(DecodedImage::new_from_u8(pixmap.take(), width, height))
+}
+
+fn load_svg(path: &Path) -> Result<DecodedImage, String> {
+    render_svg_at_scale(path, 1.0)
+}
+
+/// Rasterizes the SVG to an exact target pixel size, independently scaling X
+/// and Y from the document's intrinsic size. Used by Save As, where the user
+/// may have typed a width/height directly (always kept aspect-locked by the
+/// UI, but computed this way so the output always lands on the exact pixel
+/// count requested regardless of any UI-side rounding).
+pub fn render_svg_to_size(path: &Path, width: u32, height: u32) -> Result<DecodedImage, String> {
+    let tree = parse_svg_tree(path)?;
+    let native = tree.size();
+    let width  = width.max(1);
+    let height = height.max(1);
+
+    let scale_x = width  as f32 / native.width().max(f32::EPSILON);
+    let scale_y = height as f32 / native.height().max(f32::EPSILON);
+
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)
+        .ok_or("Failed to create pixmap")?;
+
+    let transform = resvg::tiny_skia::Transform::from_scale(scale_x, scale_y);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+
+    Ok(DecodedImage::new_from_u8(pixmap.take(), width, height))
 }
 
 /// Simple LRU cache for decoded images.
@@ -1176,5 +1224,57 @@ mod tests {
             l.current().unwrap().file_name().unwrap(),
             "b.png",
         );
+    }
+
+    // ── SVG scale-aware sizing ───────────────────────────────────────────────
+
+    /// `width`/`height` are in points (24pt), independent of the 240x240 viewBox
+    /// — mimicking an icon exported at a tiny physical size with a much more
+    /// detailed viewBox, which is exactly the case the scale factor is for.
+    fn write_test_svg(dir: &TempDir) -> std::path::PathBuf {
+        let path = dir.path().join("icon.svg");
+        fs::write(&path, br##"<svg xmlns="http://www.w3.org/2000/svg" width="24pt" height="24pt" viewBox="0 0 240 240">
+            <circle cx="120" cy="120" r="100" fill="#4287f5"/>
+        </svg>"##).unwrap();
+        path
+    }
+
+    #[test]
+    fn svg_native_size_resolves_points_to_pixels_at_96dpi() {
+        let dir  = tempfile::tempdir().unwrap();
+        let path = write_test_svg(&dir);
+        // usvg resolves 24pt at the default 96 DPI: 24pt * (96/72) = 32px.
+        let (w, h) = svg_native_size(&path).unwrap();
+        assert!((w - 32.0).abs() < 0.01, "expected 32px width, got {w}");
+        assert!((h - 32.0).abs() < 0.01, "expected 32px height, got {h}");
+    }
+
+    #[test]
+    fn render_svg_at_scale_produces_scaled_pixel_dimensions() {
+        let dir  = tempfile::tempdir().unwrap();
+        let path = write_test_svg(&dir);
+
+        let at_1x = render_svg_at_scale(&path, 1.0).unwrap();
+        assert_eq!((at_1x.width, at_1x.height), (32, 32));
+
+        let at_4x = render_svg_at_scale(&path, 4.0).unwrap();
+        assert_eq!((at_4x.width, at_4x.height), (128, 128));
+    }
+
+    #[test]
+    fn render_svg_at_scale_never_produces_a_zero_sized_pixmap() {
+        let dir  = tempfile::tempdir().unwrap();
+        let path = write_test_svg(&dir);
+        let tiny = render_svg_at_scale(&path, 0.001).unwrap();
+        assert!(tiny.width >= 1 && tiny.height >= 1);
+    }
+
+    #[test]
+    fn render_svg_to_size_hits_the_exact_requested_pixel_count() {
+        let dir  = tempfile::tempdir().unwrap();
+        let path = write_test_svg(&dir);
+        // A non-uniform, non-integer-multiple target exercises independent x/y scaling.
+        let img = render_svg_to_size(&path, 1336, 897).unwrap();
+        assert_eq!((img.width, img.height), (1336, 897));
     }
 }
