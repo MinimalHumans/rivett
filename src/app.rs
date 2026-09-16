@@ -46,6 +46,7 @@ pub struct RivettApp {
 
     show_info_panel: bool,
     show_help:       bool,
+    show_licenses:   bool,
     toast:           Option<Toast>,
     delete_confirm:  Option<DeleteConfirm>,
 
@@ -128,6 +129,7 @@ impl RivettApp {
             metadata:        vec![],
             show_info_panel: settings.show_info_panel,
             show_help:       false,
+            show_licenses:   false,
             toast:           None,
             delete_confirm:  None,
             pinned:          false,
@@ -1220,6 +1222,35 @@ impl RivettApp {
         if !open { self.show_help = false; }
     }
 
+    fn draw_licenses_overlay(&mut self, ctx: &Context) {
+        if !self.show_licenses { return; }
+
+        const THIRD_PARTY_LICENSES: &str = include_str!("../THIRD-PARTY-LICENSES.md");
+
+        let mut open = true;
+        egui::Window::new("Open Source Licenses")
+            .open(&mut open)
+            .collapsible(false)
+            .default_size([560.0, 480.0])
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.screen_rect().center())
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Rivett v{} is built on the open-source Rust ecosystem. Full license texts below.",
+                        env!("CARGO_PKG_VERSION")
+                    ))
+                    .small()
+                    .color(egui::Color32::from_gray(140)),
+                );
+                ui.separator();
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.add(egui::Label::new(egui::RichText::new(THIRD_PARTY_LICENSES).monospace()).selectable(true));
+                });
+            });
+        if !open { self.show_licenses = false; }
+    }
+
     fn perform_save_as(&mut self, state: &SaveAsState) {
         let Some(src_path) = self.current_path.clone() else { return };
 
@@ -2086,6 +2117,10 @@ impl RivettApp {
                     egui::RichText::new("github.com/MinimalHumans/rivett").small(),
                     "https://github.com/MinimalHumans/rivett"
                 );
+                if ui.add(egui::Button::new(egui::RichText::new("Open Source Licenses").small()).frame(false)).clicked() {
+                    self.show_licenses = true;
+                    ui.close_menu();
+                }
             });
         });
     }
@@ -2531,6 +2566,7 @@ impl eframe::App for RivettApp {
         self.draw_save_as_modal(ctx);
         self.utilities.draw(ctx, self.db.as_ref());
         self.draw_help_overlay(ctx);
+        self.draw_licenses_overlay(ctx);
 
         CentralPanel::default().show(ctx, |ui| {
             let canvas = ui.max_rect();

@@ -22,4 +22,6 @@ All hotkeys and mouse interactions are listed in the in-app help menu. Open it w
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
+
+Rivett is built on the Rust open-source ecosystem; see [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) for a full list of dependencies and their licenses (also available in-app via the right-click menu).
