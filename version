@@ -95,13 +95,27 @@ def cmd_release(args):
 
     # Commit the version change if there are changes
     status = subprocess.check_output(["git", "status", "--porcelain", "Cargo.toml"]).decode("utf-8")
+    committed = False
     if status:
         subprocess.run(["git", "add", "Cargo.toml"], check=True)
-        subprocess.run(["git", "commit", "-m", f"chore: release {base_version}"], check=True)
+        if args.message:
+            subprocess.run(["git", "commit", "-m", args.message], check=True)
+        else:
+            # No -m given: let git open $EDITOR so the release gets a real,
+            # hand-written summary instead of a generic "release x.y.z" line.
+            subprocess.run(["git", "commit"], check=True)
+        committed = True
 
-    # Tag
+    # Tag, reusing the release commit's message as the tag annotation
+    if args.message:
+        tag_message = args.message
+    elif committed:
+        tag_message = subprocess.check_output(["git", "log", "-1", "--format=%B"]).decode("utf-8").strip()
+    else:
+        tag_message = f"Release {tag}"
+
     print(f"Tagging {tag}...")
-    subprocess.run(["git", "tag", "-a", tag, "-m", f"Release {tag}"], check=True)
+    subprocess.run(["git", "tag", "-a", tag, "-m", tag_message], check=True)
     
     # Ask before pushing
     response = input(f"Push commit and tag {tag} to origin? [y/N]: ").strip().lower()
@@ -131,7 +145,8 @@ def main():
     up_parser.add_argument("part", choices=["major", "minor", "patch"], nargs="?", default="patch")
     
     # version release
-    subparsers.add_parser("release", help="Strip hash, tag, and push release")
+    release_parser = subparsers.add_parser("release", help="Strip hash, tag, and push release")
+    release_parser.add_argument("-m", "--message", help="Commit and tag message describing the release. Opens $EDITOR if omitted.")
     
     args = parser.parse_args()
     
