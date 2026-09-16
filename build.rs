@@ -21,5 +21,14 @@ fn main() {
 </assembly>
 "#);
         res.compile().unwrap();
+
+        // Force NvOptimusEnablement/AmdPowerXpressRequestHighPerformance (declared
+        // in main.rs) into the .exe's export table — MSVC's linker doesn't export
+        // symbols from an executable by default, and the GPU drivers look them up
+        // there (GetProcAddress on the main module), not just in the symbol table.
+        if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+            println!("cargo:rustc-link-arg=/EXPORT:NvOptimusEnablement");
+            println!("cargo:rustc-link-arg=/EXPORT:AmdPowerXpressRequestHighPerformance");
+        }
     }
 }

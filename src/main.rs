@@ -7,6 +7,21 @@ use rivett::settings::AppSettings;
 use std::path::PathBuf;
 use std::io::Write;
 
+// Hint to NVIDIA/AMD hybrid-graphics drivers to run Rivett on the discrete
+// GPU rather than the integrated one. Rivett uploads full-resolution
+// RGBA32F textures to VRAM per open image, so it benefits from the
+// discrete GPU's memory and driver path; on Optimus/PowerXpress laptops
+// the OS may otherwise bind it to the iGPU. Paired with the /EXPORT
+// linker args in build.rs (MSVC requires the symbol to appear in the
+// executable's export table for the driver to find it).
+#[cfg(target_os = "windows")]
+#[no_mangle]
+pub static NvOptimusEnablement: i32 = 1;
+
+#[cfg(target_os = "windows")]
+#[no_mangle]
+pub static AmdPowerXpressRequestHighPerformance: i32 = 1;
+
 fn init_logging() {
     let mut builder = env_logger::Builder::from_default_env();
 

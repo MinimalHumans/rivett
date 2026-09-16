@@ -12,6 +12,15 @@ pub struct GammaRenderer {
     tex_cache: HashMap<PathBuf, (glow::Texture, u32, u32)>,
     /// Which path is currently being displayed by paint().
     pub active_path: Option<PathBuf>,
+    // Uniform locations, resolved once at link time instead of per-frame.
+    u_rotation: Option<glow::UniformLocation>,
+    u_gamma: Option<glow::UniformLocation>,
+    u_exposure: Option<glow::UniformLocation>,
+    u_remap_min: Option<glow::UniformLocation>,
+    u_remap_max: Option<glow::UniformLocation>,
+    u_image_rect: Option<glow::UniformLocation>,
+    u_canvas_rect: Option<glow::UniformLocation>,
+    u_texture: Option<glow::UniformLocation>,
 }
 
 impl GammaRenderer {
@@ -67,12 +76,29 @@ impl GammaRenderer {
             gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 8, 0);
             gl.enable_vertex_attrib_array(0);
 
+            let u_rotation = gl.get_uniform_location(program, "u_rotation");
+            let u_gamma = gl.get_uniform_location(program, "u_gamma");
+            let u_exposure = gl.get_uniform_location(program, "u_exposure");
+            let u_remap_min = gl.get_uniform_location(program, "u_remap_min");
+            let u_remap_max = gl.get_uniform_location(program, "u_remap_max");
+            let u_image_rect = gl.get_uniform_location(program, "u_image_rect");
+            let u_canvas_rect = gl.get_uniform_location(program, "u_canvas_rect");
+            let u_texture = gl.get_uniform_location(program, "u_texture");
+
             Self {
                 program,
                 vertex_array,
                 vbo,
                 tex_cache: HashMap::new(),
                 active_path: None,
+                u_rotation,
+                u_gamma,
+                u_exposure,
+                u_remap_min,
+                u_remap_max,
+                u_image_rect,
+                u_canvas_rect,
+                u_texture,
             }
         }
     }
@@ -172,31 +198,17 @@ impl GammaRenderer {
         unsafe {
             gl.use_program(Some(self.program));
 
-            let rot_loc = gl.get_uniform_location(self.program, "u_rotation");
-            gl.uniform_1_i32(rot_loc.as_ref(), rotation.as_u8() as i32);
-
-            let gamma_loc = gl.get_uniform_location(self.program, "u_gamma");
-            gl.uniform_1_f32(gamma_loc.as_ref(), adj.gamma);
-
-            let expo_loc = gl.get_uniform_location(self.program, "u_exposure");
-            gl.uniform_1_f32(expo_loc.as_ref(), adj.exposure);
-
-            let rmin_loc = gl.get_uniform_location(self.program, "u_remap_min");
-            gl.uniform_1_f32(rmin_loc.as_ref(), adj.remap_min);
-
-            let rmax_loc = gl.get_uniform_location(self.program, "u_remap_max");
-            gl.uniform_1_f32(rmax_loc.as_ref(), adj.remap_max);
-
-            let img_loc = gl.get_uniform_location(self.program, "u_image_rect");
-            gl.uniform_4_f32(img_loc.as_ref(), image_rect.min.x, image_rect.min.y, image_rect.max.x, image_rect.max.y);
-
-            let canvas_loc = gl.get_uniform_location(self.program, "u_canvas_rect");
-            gl.uniform_4_f32(canvas_loc.as_ref(), canvas_rect.min.x, canvas_rect.min.y, canvas_rect.max.x, canvas_rect.max.y);
+            gl.uniform_1_i32(self.u_rotation.as_ref(), rotation.as_u8() as i32);
+            gl.uniform_1_f32(self.u_gamma.as_ref(), adj.gamma);
+            gl.uniform_1_f32(self.u_exposure.as_ref(), adj.exposure);
+            gl.uniform_1_f32(self.u_remap_min.as_ref(), adj.remap_min);
+            gl.uniform_1_f32(self.u_remap_max.as_ref(), adj.remap_max);
+            gl.uniform_4_f32(self.u_image_rect.as_ref(), image_rect.min.x, image_rect.min.y, image_rect.max.x, image_rect.max.y);
+            gl.uniform_4_f32(self.u_canvas_rect.as_ref(), canvas_rect.min.x, canvas_rect.min.y, canvas_rect.max.x, canvas_rect.max.y);
 
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(tex));
-            let tex_loc = gl.get_uniform_location(self.program, "u_texture");
-            gl.uniform_1_i32(tex_loc.as_ref(), 0);
+            gl.uniform_1_i32(self.u_texture.as_ref(), 0);
 
             gl.bind_vertex_array(Some(self.vertex_array));
             gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
