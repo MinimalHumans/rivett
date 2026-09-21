@@ -13,8 +13,7 @@ name = "Rivett"
 identifier = "com.minimalhumans.rivett"
 icon = ["resources/icon.png"]
 resources = ["resources/rivett.desktop", "resources/com.minimalhumans.rivett.metainfo.xml"]
-authors = ["Jesse Kretschmer <jesse@krets.com>"]
-license = "MIT"
+appimage_metainfo_path = "resources/com.minimalhumans.rivett.metainfo.xml"
 copyright = "Copyright © 2026 Jesse Kretschmer (Minimal Humans)"
 category = "Graphics and Design"
 short_description = "Fast, keyboard-driven image vetting tool."
@@ -22,22 +21,10 @@ long_description = """
 Rivett is a high-performance image vetting tool designed for photographers and creatives who need to quickly sort through large collections of images. It features a keyboard-centric workflow, fast image loading, and a clean interface.
 """
 
-[[package.metadata.bundle.osx.document_type]]
-name = "Image"
-role = "Viewer"
-rank = "Alternate"
-extensions = ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "gif", "exr", "svg",
-              "arw", "cr2", "cr3", "nef", "nrw", "orf", "raf", "rw2", "dng"]
-utis = ["public.png", "public.jpeg", "org.webmproject.webp", "com.microsoft.bmp",
-        "public.tiff", "com.compuserve.gif", "com.ilm.openexr-image",
-        "public.svg-image", "com.adobe.raw-image", "com.canon.cr2-raw-image",
-        "com.canon.cr3-raw-image", "com.nikon.raw-image", "com.olympus.raw-image",
-        "com.fuji.raw-image", "com.panasonic.raw-image", "com.adobe.photoshop.raw-image"]
-
-[package.metadata.bundle.deb]
-maintainer = "Jesse Kretschmer <jesse@krets.com>"
-section = "graphics"
-priority = "optional"
+[package.metadata.bundle.osx]
+# Image file associations (CFBundleDocumentTypes) live in a plist fragment
+# because cargo-bundle has no first-class document type support.
+info_plist_exts = ["resources/macos-document-types.plist"]
 
 # cargo-deb configuration — used instead of cargo-bundle for .deb packaging so
 # that the AppStream metainfo file lands at /usr/share/metainfo/ (where KDE
