@@ -1438,7 +1438,7 @@ impl RivettApp {
                                     points.push(egui::pos2(x, y));
                                     points.push(egui::pos2(x + bin_width, y));
                                 }
-                                ui.painter().add(egui::Shape::line(points, egui::Stroke::new(1.2, color)));
+                                ui.painter().add(egui::Shape::line(points, egui::Stroke::new(1.2_f32, color)));
                             };
 
                             paint_channel(ui, &img.histograms.r, egui::Color32::from_rgba_unmultiplied(255, 50, 50, 180));
@@ -1458,7 +1458,7 @@ impl RivettApp {
                                     let res = ui.interact(h_rect, egui::Id::new(id), egui::Sense::click_and_drag());
                                     let color = if res.dragged() || res.hovered() { egui::Color32::WHITE } else { egui::Color32::from_gray(180) };
                                     ui.painter().rect_filled(h_rect, 1.0, color);
-                                    ui.painter().line_segment([egui::pos2(x, hist_rect.top()), egui::pos2(x, hist_rect.bottom())], egui::Stroke::new(1.0, color.gamma_multiply(0.5)));
+                                    ui.painter().line_segment([egui::pos2(x, hist_rect.top()), egui::pos2(x, hist_rect.bottom())], egui::Stroke::new(1.0_f32, color.gamma_multiply(0.5)));
                                     res
                                 };
 

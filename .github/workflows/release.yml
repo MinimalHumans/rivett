@@ -35,7 +35,7 @@ jobs:
           Compress-Archive -Path dist/* -DestinationPath "rivett-${VERSION}-windows-portable.zip"
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             rivett-*-windows-portable.zip
@@ -69,7 +69,7 @@ jobs:
         # lands at /usr/share/metainfo/ (required for KDE Discover name lookup).
         run: cargo deb --no-build
       - name: Upload Linux Bundles
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             target/release/bundle/appimage/*.AppImage
@@ -98,7 +98,7 @@ jobs:
           codesign --force --deep --sign - target/release/bundle/osx/Rivett.app
           ditto -c -k --keepParent target/release/bundle/osx/Rivett.app rivett-${VERSION}-macos.zip
       - name: Upload macOS Bundle
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: rivett-*-macos.zip
           draft: false
