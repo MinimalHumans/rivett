@@ -428,13 +428,28 @@ impl RivettApp {
     fn hide_current(&mut self, ctx: &Context) {
         let Some(path) = self.current_path.clone() else { return };
         self.session.ignore_image(path.clone());
-        self.toast(format!("Hidden: {}", path.file_name()
-            .and_then(|n| n.to_str()).unwrap_or("?")), ToastKind::ImageStatus);
         let before = self.current_path.clone();
         self.navigate_next(ctx, false);
         if self.current_path == before {
             self.navigate_prev(ctx, false);
         }
+        // Toast last: navigating clears image-status toasts and may post its own
+        // ("Rated", "End of images"), either of which would bury this one.
+        let msg = format!("Hidden: {}  —  {} to undo", file_name_lossy(&path),
+            shortcut_label(Modifiers::CTRL, "Z"));
+        self.toast = Some(Toast::hidden(msg, path));
+    }
+
+    /// Restore the image hidden by the toast currently on screen, if any.
+    fn undo_hide(&mut self, ctx: &Context) {
+        let Some(path) = self.toast.as_ref()
+            .filter(|t| t.alive())
+            .and_then(|t| t.undo_hide.clone()) else { return };
+
+        self.session.unignore_image(&path);
+        let found = self.listing.as_mut().map_or(false, |l| l.seek_to(&path));
+        if found { self.load_current(ctx, false); }
+        self.toast(format!("Restored: {}", file_name_lossy(&path)), ToastKind::ImageStatus);
     }
 
     // ── Rating ────────────────────────────────────────────────────────────
@@ -879,6 +894,9 @@ impl RivettApp {
         if ctrl && !input.modifiers.shift && input.key_pressed(Key::C) {
             self.copy_to_clipboard();
         }
+        if ctrl && !input.modifiers.shift && input.key_pressed(Key::Z) {
+            self.undo_hide(ctx);
+        }
         if ctrl && input.modifiers.shift && input.key_pressed(Key::S) {
             self.save_as(ctx);
         }
@@ -1174,6 +1192,7 @@ impl RivettApp {
                                 ui.label(""); ui.label(""); ui.end_row();
                                 section(ui, "FILE MANAGEMENT");
                                 row(ui, &format!("H / {}", shortcut_label(Modifiers::ALT, "H")),   "Hide / ignore image (Session only)");
+                                row(ui, &shortcut_label(Modifiers::CTRL, "Z"), "Undo hide (while its toast shows)");
                                 row(ui, "Del × 2",     "Move to trash");
                                 row(ui, "Escape",       "Cancel delete");
 
@@ -2773,11 +2792,23 @@ impl eframe::App for RivettApp {
                 let a = (alpha * 200.0) as u8;
                 let bg_color = if toast.kind == ToastKind::Error {
                     egui::Color32::from_rgba_unmultiplied(180, 30, 30, a)
+                } else if toast.undo_hide.is_some() {
+                    egui::Color32::from_rgba_unmultiplied(30, 90, 170, a)
                 } else {
                     egui::Color32::from_rgba_unmultiplied(30, 30, 30, a)
                 };
                 painter.rect_filled(rect, 6.0, bg_color);
                 painter.galley(rect.min + pad, galley, egui::Color32::from_rgba_unmultiplied(255, 255, 255, (alpha * 255.0) as u8));
+
+                // Countdown bar: shows how long the undo is still on offer.
+                if toast.undo_hide.is_some() {
+                    let inset = 6.0;
+                    let bar = egui::Rect::from_min_size(
+                        egui::pos2(rect.min.x + inset, rect.max.y - 5.0),
+                        egui::vec2((rect.width() - inset * 2.0) * toast.remaining_fraction(), 2.0),
+                    );
+                    painter.rect_filled(bar, 1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, (alpha * 180.0) as u8));
+                }
                 ctx.request_repaint();
             }
         }
@@ -2801,24 +2832,47 @@ enum ToastKind {
 }
 
 struct Toast {
-    message: String,
-    start:   Instant,
-    kind:    ToastKind,
+    message:   String,
+    start:     Instant,
+    kind:      ToastKind,
+    duration:  Duration,
+    /// Set on a "Hidden" toast: Ctrl+Z restores this image while the toast is showing.
+    undo_hide: Option<std::path::PathBuf>,
 }
 
 impl Toast {
+    const FADE_IN:  f32 = 0.05;
+    const FADE_OUT: f32 = 0.3;
+
     fn new(message: String, kind: ToastKind) -> Self {
-        Self { message, start: Instant::now(), kind }
+        Self { message, start: Instant::now(), kind, duration: Duration::from_millis(1200), undo_hide: None }
+    }
+    /// A longer-lived toast that offers to undo hiding `path`.
+    fn hidden(message: String, path: std::path::PathBuf) -> Self {
+        Self {
+            duration:  Duration::from_secs(4),
+            undo_hide: Some(path),
+            ..Self::new(message, ToastKind::General)
+        }
     }
     fn alive(&self) -> bool {
-        self.start.elapsed() < Duration::from_millis(1200)
+        self.start.elapsed() < self.duration
     }
     fn alpha(&self) -> f32 {
-        let elapsed = self.start.elapsed().as_secs_f32();
-        if elapsed < 0.05 { elapsed / 0.05 }
-        else if elapsed > 0.9 { 1.0 - (elapsed - 0.9) / 0.3 }
+        let elapsed   = self.start.elapsed().as_secs_f32();
+        let remaining = self.duration.as_secs_f32() - elapsed;
+        if elapsed < Self::FADE_IN { elapsed / Self::FADE_IN }
+        else if remaining < Self::FADE_OUT { (remaining / Self::FADE_OUT).max(0.0) }
         else { 1.0 }
     }
+    /// Fraction of the toast's lifetime still left, 1.0 → 0.0.
+    fn remaining_fraction(&self) -> f32 {
+        (1.0 - self.start.elapsed().as_secs_f32() / self.duration.as_secs_f32()).clamp(0.0, 1.0)
+    }
+}
+
+fn file_name_lossy(path: &Path) -> &str {
+    path.file_name().and_then(|n| n.to_str()).unwrap_or("?")
 }
 
 struct DeleteConfirm {

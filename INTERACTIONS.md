@@ -43,7 +43,8 @@
 
 | Key | Action |
 |-----|--------|
-| `H` / `Alt+H` | Hide / ignore current image |
+| `H` / `Alt+H` | Hide / ignore current image (shows a 4-second toast) |
+| `Ctrl+Z` | Undo the hide — only while its toast is showing; jumps back to that image |
 | `Delete` (first press) | Arm delete — opens a 4-second confirm window |
 | `Delete` (second press, within 4 s) | Move to trash |
 | `Escape` | Cancel armed delete |

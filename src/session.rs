@@ -304,6 +304,11 @@ impl SessionState {
         self.ignored_images.insert(path);
     }
 
+    /// Reverse [`ignore_image`](Self::ignore_image). Returns `true` if the image was hidden.
+    pub fn unignore_image(&mut self, path: &PathBuf) -> bool {
+        self.ignored_images.remove(path)
+    }
+
     pub fn is_ignored(&self, path: &PathBuf) -> bool {
         self.ignored_images.contains(path)
     }
@@ -392,6 +397,17 @@ mod tests {
         assert!(!s.has_pending_changes());
         assert!(s.ignored_images.is_empty());
         assert!(s.rating_filter.is_none());
+    }
+
+    #[test]
+    fn unignore_reverses_ignore() {
+        let mut s = SessionState::new(SortOrder::Name);
+        let path = p("/img.jpg");
+        s.ignore_image(path.clone());
+        assert!(s.is_ignored(&path));
+        assert!(s.unignore_image(&path));
+        assert!(!s.is_ignored(&path));
+        assert!(!s.unignore_image(&path), "second unignore is a no-op");
     }
 
     // ── RatingFilter ─────────────────────────────────────────────────────
