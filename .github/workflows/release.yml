@@ -7,10 +7,23 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+
+env:
+  # Artifact Signing, reached by OIDC as the app registration whose
+  # federated credential trusts the `release` environment (none of
+  # these are secrets).
+  AZURE_CLIENT_ID: cea87653-01f1-4308-9988-8ca28c971a70
+  AZURE_TENANT_ID: dbbfdd81-727c-4a58-a3f5-db66a2d489c1
+  AZURE_SUBSCRIPTION_ID: e3fd192a-87a3-4645-aa51-6744c2be6469
+  SIGNING_ENDPOINT: https://eus.codesigning.azure.net
+  SIGNING_ACCOUNT: krets-signing
+  SIGNING_PROFILE: scf-public-trust
 
 jobs:
   build-windows:
     runs-on: windows-latest
+    environment: release
     steps:
       - uses: actions/checkout@v5
       
@@ -23,8 +36,64 @@ jobs:
       - name: Build Rivett
         run: cargo build --release
         
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      # signtool plus Microsoft's Artifact Signing dlib, which takes its
+      # credential from the azure/login session above (no client secret).
+      - name: Set up signtool
+        shell: pwsh
+        run: |
+          nuget install Microsoft.Trusted.Signing.Client -Version 1.0.60 -x -OutputDirectory "$env:RUNNER_TEMP/signing"
+          $dlib = (Resolve-Path "$env:RUNNER_TEMP/signing/Microsoft.Trusted.Signing.Client/bin/x64/Azure.CodeSigning.Dlib.dll").Path
+          $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin/10.*/x64/signtool.exe" |
+            Sort-Object FullName | Select-Object -Last 1).FullName
+          $metadata = "$env:RUNNER_TEMP/signing/metadata.json"
+          @{
+            Endpoint               = $env:SIGNING_ENDPOINT
+            CodeSigningAccountName = $env:SIGNING_ACCOUNT
+            CertificateProfileName = $env:SIGNING_PROFILE
+          } | ConvertTo-Json | Set-Content $metadata
+
+          'if (-not $args[0]) { throw "no file to sign" }',
+          '& $env:SIGNTOOL sign /v /fd SHA256 /tr http://timestamp.acs.microsoft.com /td SHA256 /dlib $env:SIGNING_DLIB /dmdf $env:SIGNING_METADATA $args[0]',
+          'if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }' | Set-Content "$env:RUNNER_TEMP/signing/sign.ps1"
+
+          "SIGNTOOL=$signtool" >> $env:GITHUB_ENV
+          "SIGNING_DLIB=$dlib" >> $env:GITHUB_ENV
+          "SIGNING_METADATA=$metadata" >> $env:GITHUB_ENV
+
+      # The MSI embeds the exe, so sign the exe first.
+      - name: Sign rivett.exe
+        shell: pwsh
+        run: |
+          & "$env:RUNNER_TEMP/signing/sign.ps1" "$PWD/target/release/rivett.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Build MSI Installer
         run: cargo wix --no-build --nocapture
+
+      - name: Sign MSI
+        shell: pwsh
+        run: |
+          foreach ($msi in Get-ChildItem target/wix/*.msi) {
+            & "$env:RUNNER_TEMP/signing/sign.ps1" $msi.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Verify signatures
+        shell: pwsh
+        run: |
+          $files = @("target/release/rivett.exe") + (Get-ChildItem target/wix/*.msi).FullName
+          foreach ($file in $files) {
+            $sig = Get-AuthenticodeSignature $file
+            "$file : $($sig.Status)"
+            if ($sig.Status -ne "Valid") { throw "$file is not validly signed" }
+          }
         
       - name: Package Portable ZIP
         run: |
