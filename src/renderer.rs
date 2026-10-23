@@ -125,11 +125,14 @@ impl GammaRenderer {
 
             let tex = gl.create_texture().expect("Cannot create texture");
             gl.bind_texture(glow::TEXTURE_2D, Some(tex));
-            // Zooming in must show the source pixels as-is, so magnify with
-            // nearest. Minify with linear: no mipmaps, so it only averages
-            // the neighbouring texels.
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
+            // Minify with trilinear + mipmaps: plain bilinear only blends the
+            // 4 texels under the sample point, which aliases badly once a
+            // screen pixel covers many source texels (fine lines flickering
+            // in and out while zooming out). Mipmaps box-average that down
+            // first. MAG_FILTER is set per-frame in paint() since it depends
+            // on the current zoom level.
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR_MIPMAP_LINEAR as i32);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
 
@@ -144,6 +147,7 @@ impl GammaRenderer {
                 glow::FLOAT,
                 Some(bytemuck::cast_slice(rgba_f32)),
             );
+            gl.generate_mipmap(glow::TEXTURE_2D);
 
             self.tex_cache.insert(path, (tex, width, height));
         }
@@ -189,7 +193,7 @@ impl GammaRenderer {
         }
     }
 
-    pub fn paint(&self, gl: &glow::Context, image_rect: egui::Rect, canvas_rect: egui::Rect, adj: crate::session::ImageAdjustments, rotation: crate::session::Rotation) {
+    pub fn paint(&self, gl: &glow::Context, image_rect: egui::Rect, canvas_rect: egui::Rect, adj: crate::session::ImageAdjustments, rotation: crate::session::Rotation, zoom: f32) {
         let tex = match &self.active_path {
             Some(p) => match self.tex_cache.get(p) {
                 Some((tex, _, _)) => *tex,
@@ -212,6 +216,11 @@ impl GammaRenderer {
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(tex));
             gl.uniform_1_i32(self.u_texture.as_ref(), 0);
+
+            // Below 100%, linear filtering looks better (smooth downscale).
+            // Above 100%, show the source pixels as-is with nearest.
+            let mag_filter = if zoom > 1.0 { glow::NEAREST } else { glow::LINEAR };
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, mag_filter as i32);
 
             gl.bind_vertex_array(Some(self.vertex_array));
             gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);

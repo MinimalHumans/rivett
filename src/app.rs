@@ -2696,11 +2696,12 @@ impl eframe::App for RivettApp {
                     let rotation = self.current_path.as_ref()
                         .map(|p| self.session.rotation_for(p))
                         .unwrap_or_default();
+                    let zoom = self.viewer.zoom;
                     ui.painter().add(egui::PaintCallback {
                         rect: canvas, // Cover the entire canvas to allow for zoom/pan clipping
                         callback: Arc::new(egui_glow::CallbackFn::new(move |_info, painter| {
                             let renderer = renderer.lock().unwrap_or_else(|p| p.into_inner());
-                            renderer.paint(painter.gl(), rect, canvas, adj, rotation);
+                            renderer.paint(painter.gl(), rect, canvas, adj, rotation, zoom);
                         })),
                     });
                 } else {
