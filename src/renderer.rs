@@ -125,8 +125,11 @@ impl GammaRenderer {
 
             let tex = gl.create_texture().expect("Cannot create texture");
             gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+            // Zooming in must show the source pixels as-is, so magnify with
+            // nearest. Minify with linear: no mipmaps, so it only averages
+            // the neighbouring texels.
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
 
