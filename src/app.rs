@@ -20,6 +20,42 @@ use crate::renderer::GammaRenderer;
 use crate::utilities::UtilitiesState;
 use std::sync::{Arc, Mutex};
 
+/// Set the raw Win32 window class's background brush to match egui's dark
+/// theme (`Visuals::dark().panel_fill`, gray 27). Windows paints a window
+/// with this brush (via WM_ERASEBKGND) whenever it's shown before anything
+/// has actually been composited into it — normally defaulting to white,
+/// which is the blank white flash visible for a moment on startup (e.g.
+/// while a GPU driver wakes up or the first frame is still being built).
+/// Matching the brush color to our theme makes that gap invisible instead
+/// of jarring.
+#[cfg(target_os = "windows")]
+fn dim_window_background(cc: &CreationContext<'_>) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = cc.window_handle() else { return };
+    let RawWindowHandle::Win32(win32) = handle.as_raw() else { return };
+    let hwnd = win32.hwnd.get();
+
+    #[link(name = "gdi32")]
+    extern "system" {
+        fn CreateSolidBrush(color: u32) -> isize;
+    }
+    #[link(name = "user32")]
+    extern "system" {
+        fn SetClassLongPtrW(hwnd: isize, index: i32, new_long: isize) -> usize;
+    }
+
+    const GCL_HBRBACKGROUND: i32 = -10;
+    const DARK_GRAY: u32 = 0x00_1B_1B_1B; // matches egui::Visuals::dark().panel_fill
+
+    unsafe {
+        let brush = CreateSolidBrush(DARK_GRAY);
+        if brush != 0 {
+            SetClassLongPtrW(hwnd, GCL_HBRBACKGROUND, brush);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // RivettApp
 // ---------------------------------------------------------------------------
@@ -96,6 +132,9 @@ struct SaveAsState {
 
 impl RivettApp {
     pub fn new(cc: &CreationContext<'_>, settings: AppSettings, initial_image: Option<std::path::PathBuf>) -> Self {
+        #[cfg(target_os = "windows")]
+        dim_window_background(cc);
+
         // Platform-specific styling
         let mut visuals = egui::Visuals::dark();
         visuals.window_rounding = 0.0.into();
