@@ -29,10 +29,7 @@ jobs:
       
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        
-      - name: Install cargo-wix
-        run: cargo install cargo-wix --version 0.3.9
-        
+
       - name: Build Rivett
         run: cargo build --release
         
@@ -67,33 +64,18 @@ jobs:
           "SIGNING_DLIB=$dlib" >> $env:GITHUB_ENV
           "SIGNING_METADATA=$metadata" >> $env:GITHUB_ENV
 
-      # The MSI embeds the exe, so sign the exe first.
       - name: Sign rivett.exe
         shell: pwsh
         run: |
           & "$env:RUNNER_TEMP/signing/sign.ps1" "$PWD/target/release/rivett.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Build MSI Installer
-        run: cargo wix --no-build --nocapture
-
-      - name: Sign MSI
+      - name: Verify signature
         shell: pwsh
         run: |
-          foreach ($msi in Get-ChildItem target/wix/*.msi) {
-            & "$env:RUNNER_TEMP/signing/sign.ps1" $msi.FullName
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-
-      - name: Verify signatures
-        shell: pwsh
-        run: |
-          $files = @("target/release/rivett.exe") + (Get-ChildItem target/wix/*.msi).FullName
-          foreach ($file in $files) {
-            $sig = Get-AuthenticodeSignature $file
-            "$file : $($sig.Status)"
-            if ($sig.Status -ne "Valid") { throw "$file is not validly signed" }
-          }
+          $sig = Get-AuthenticodeSignature "target/release/rivett.exe"
+          "target/release/rivett.exe : $($sig.Status)"
+          if ($sig.Status -ne "Valid") { throw "target/release/rivett.exe is not validly signed" }
         
       - name: Package Portable ZIP
         run: |
@@ -106,9 +88,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
-          files: |
-            rivett-*-windows-portable.zip
-            target/wix/*.msi
+          files: rivett-*-windows-portable.zip
           draft: false
           prerelease: false
           fail_on_unmatched_files: true
